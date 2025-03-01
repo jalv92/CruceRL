@@ -236,3 +236,54 @@
 2025-03-01 12:36:50,756 - INFO - Mean reward: -0.10, Mean episode length: 22790.00
 2025-03-01 12:37:10,427 - INFO - Training step: 80000
 2025-03-01 12:37:10,427 - INFO - Mean reward: -0.10, Mean episode length: 22790.00
+2025-03-01 12:44:02,568 - INFO - Módulos de trading inicializados correctamente
+2025-03-01 12:44:19,308 - INFO - Iniciando proceso en modo: train
+2025-03-01 12:44:19,308 - INFO - Iniciando entrenamiento...
+2025-03-01 12:44:19,308 - INFO - Usando datos extraídos: data\extracted_data_20250301_044323.csv
+2025-03-01 12:44:19,353 - INFO - Prepared data with 22800 training bars and 5700 testing bars
+2025-03-01 12:44:19,353 - INFO - Datos cargados: 22800 registros de entrenamiento, 5700 de prueba
+2025-03-01 12:44:19,353 - INFO - Starting training with algorithm: PPO
+2025-03-01 12:44:19,353 - INFO - Training parameters: {'algo': 'PPO', 'policy': 'MlpPolicy', 'learning_rate': 0.0003, 'batch_size': 64, 'n_steps': 2048, 'total_timesteps': 500000, 'device': 'auto'}
+2025-03-01 12:44:19,353 - INFO - Environment parameters: {'initial_balance': 100000.0, 'commission': 0.0001, 'slippage': 0.0001, 'window_size': 10, 'reward_scaling': 0.01, 'position_size': 0.1, 'stop_loss_pct': 0.02, 'take_profit_pct': 0.04}
+2025-03-01 12:44:19,371 - INFO - Using device: cuda
+2025-03-01 12:44:35,224 - INFO - Training step: 5000
+2025-03-01 12:44:35,224 - INFO - Mean reward: 0.00, Mean episode length: 0.00
+2025-03-01 12:44:35,240 - INFO - New best model saved with reward: 0.00
+2025-03-01 12:44:50,063 - INFO - Training step: 10000
+2025-03-01 12:44:50,063 - INFO - Mean reward: 0.00, Mean episode length: 0.00
+2025-03-01 12:45:08,526 - INFO - Eval num_timesteps=10000, episode_reward=-0.57
+2025-03-01 12:45:08,534 - INFO - New best model saved with reward: -0.57
+2025-03-01 12:45:27,844 - INFO - Training step: 15000
+2025-03-01 12:45:27,844 - INFO - Mean reward: 0.00, Mean episode length: 0.00
+2025-03-01 12:45:46,191 - INFO - Training step: 20000
+2025-03-01 12:45:46,192 - INFO - Mean reward: 0.00, Mean episode length: 0.00
+2025-03-01 12:48:50,629 - INFO - Módulos de trading inicializados correctamente
+2025-03-01 12:49:04,584 - INFO - Iniciando proceso en modo: train
+2025-03-01 12:49:04,584 - INFO - Iniciando entrenamiento...
+2025-03-01 12:49:04,590 - INFO - Usando datos extraídos: data\extracted_data_20250301_044323.csv
+2025-03-01 12:49:04,630 - INFO - Prepared data with 22800 training bars and 5700 testing bars
+2025-03-01 12:49:04,630 - INFO - Datos cargados: 22800 registros de entrenamiento, 5700 de prueba
+2025-03-01 12:49:04,630 - INFO - Starting training with algorithm: PPO
+2025-03-01 12:49:04,630 - INFO - Training parameters: {'algo': 'PPO', 'policy': 'MlpPolicy', 'learning_rate': 0.0003, 'batch_size': 64, 'n_steps': 2048, 'total_timesteps': 500000, 'device': 'auto'}
+2025-03-01 12:49:04,630 - INFO - Environment parameters: {'initial_balance': 100000.0, 'commission': 0.0001, 'slippage': 0.0001, 'window_size': 10, 'reward_scaling': 0.01, 'position_size': 0.1, 'stop_loss_pct': 0.02, 'take_profit_pct': 0.04}
+2025-03-01 12:49:04,648 - INFO - Using device: cuda
+2025-03-01 12:49:20,464 - INFO - Training step: 5000
+2025-03-01 12:49:20,464 - INFO - Mean reward: 0.00, Mean episode length: 0.00
+2025-03-01 12:49:20,481 - INFO - New best model saved with reward: 0.00
+2025-03-01 12:49:36,453 - INFO - Training step: 10000
+2025-03-01 12:49:36,453 - INFO - Mean reward: 0.00, Mean episode length: 0.00
+2025-03-01 12:49:52,102 - INFO - Eval num_timesteps=10000, episode_reward=-0.57
+2025-03-01 12:49:52,102 - INFO - New best model saved with reward: -0.57
+2025-03-01 12:50:06,231 - INFO - Training step: 15000
+2025-03-01 12:50:06,231 - INFO - Mean reward: 0.00, Mean episode length: 0.00
+2025-03-01 12:50:20,538 - INFO - Training step: 20000
+2025-03-01 12:50:20,538 - INFO - Mean reward: 0.00, Mean episode length: 0.00
+2025-03-01 12:50:38,453 - INFO - Eval num_timesteps=20000, episode_reward=-0.57
+2025-03-01 12:50:56,685 - INFO - Training step: 25000
+2025-03-01 12:50:56,686 - INFO - Mean reward: 0.06, Mean episode length: 22790.00
+2025-03-01 12:50:56,686 - INFO - New best model saved with reward: 0.06
+2025-03-01 12:51:13,183 - INFO - Training step: 30000
+2025-03-01 12:51:13,183 - INFO - Mean reward: 0.06, Mean episode length: 22790.00
+2025-03-01 12:51:30,863 - INFO - Eval num_timesteps=30000, episode_reward=-0.57
+2025-03-01 12:51:35,827 - INFO - Deteniendo proceso...
+2025-03-01 12:51:35,827 - INFO - Proceso detenido correctamente

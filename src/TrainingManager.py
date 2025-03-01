@@ -32,17 +32,19 @@ logger = logging.getLogger("RLTraining")
 class TradingTrainingCallback(BaseCallback):
     """Custom callback for monitoring training progress"""
     
-    def __init__(self, check_freq=1000, save_path=None, verbose=1):
+    def __init__(self, check_freq=1000, save_path=None, verbose=1, training_callback=None):
         super(TradingTrainingCallback, self).__init__(verbose)
         self.check_freq = check_freq
         self.save_path = save_path
         self.best_reward = -np.inf
+        self.training_callback = training_callback
+        self.episode_count = 0
     
     def _on_step(self) -> bool:
         if self.n_calls % self.check_freq == 0:
             # Get current training stats
-            mean_reward = np.mean([ep_info["r"] for ep_info in self.model.ep_info_buffer])
-            mean_length = np.mean([ep_info["l"] for ep_info in self.model.ep_info_buffer])
+            mean_reward = np.mean([ep_info["r"] for ep_info in self.model.ep_info_buffer]) if len(self.model.ep_info_buffer) > 0 else 0
+            mean_length = np.mean([ep_info["l"] for ep_info in self.model.ep_info_buffer]) if len(self.model.ep_info_buffer) > 0 else 0
             
             logger.info(f"Training step: {self.n_calls}")
             logger.info(f"Mean reward: {mean_reward:.2f}, Mean episode length: {mean_length:.2f}")
@@ -52,6 +54,43 @@ class TradingTrainingCallback(BaseCallback):
                 self.best_reward = mean_reward
                 self.model.save(os.path.join(self.save_path, f"best_model_step_{self.n_calls}"))
                 logger.info(f"New best model saved with reward: {mean_reward:.2f}")
+            
+            # Call the training callback if provided
+            if self.training_callback is not None:
+                # Extract the most recent episode info if available
+                episode_reward = 0
+                episode_length = 0
+                
+                if len(self.model.ep_info_buffer) > 0:
+                    # Increment episode count for each completed episode
+                    old_ep_count = self.episode_count
+                    self.episode_count = len(self.model.ep_info_buffer)
+                    
+                    # Get the latest episode info only if there's a new one
+                    if self.episode_count > old_ep_count:
+                        episode_reward = self.model.ep_info_buffer[-1]["r"]
+                        episode_length = self.model.ep_info_buffer[-1]["l"]
+                
+                # Get win rate from the environment if available
+                win_rate = 0.0
+                if hasattr(self.model, 'get_env'):
+                    env = self.model.get_env()
+                    if hasattr(env, 'venv') and hasattr(env.venv, 'envs') and len(env.venv.envs) > 0:
+                        if hasattr(env.venv.envs[0].unwrapped, 'successful_trades') and hasattr(env.venv.envs[0].unwrapped, 'trade_count'):
+                            if env.venv.envs[0].unwrapped.trade_count > 0:
+                                win_rate = env.venv.envs[0].unwrapped.successful_trades / env.venv.envs[0].unwrapped.trade_count
+                
+                # Create metrics dict
+                metrics = {
+                    'episode_reward': episode_reward,
+                    'episode_length': episode_length,
+                    'mean_reward': mean_reward,
+                    'win_rate': win_rate,
+                    'episode': self.episode_count
+                }
+                
+                # Call the callback with metrics
+                self.training_callback(metrics)
         
         return True
     
@@ -295,13 +334,14 @@ class TrainingManager:
         
         return model
     
-    def train(self, train_data, test_data=None, **kwargs):
+    def train(self, train_data, test_data=None, training_callback=None, **kwargs):
         """
         Train the RL model
         
         Args:
             train_data: DataFrame with training data
             test_data: Optional DataFrame with testing data for evaluation
+            training_callback: Optional callback function to report training progress
             **kwargs: Optional parameters to override defaults
             
         Returns:
@@ -324,15 +364,14 @@ class TrainingManager:
         # Create test environment if test data provided
         eval_callback = None
         if test_data is not None:
-            # Crear entorno de evaluación con la misma configuración de normalización
-            # Pero con training=False para que no actualice las estadísticas
+            # Create evaluation environment with the same normalization but without updating stats
             test_env = self.create_env(test_data, is_train=False)
             
-            # En lugar de usar EvalCallback directamente, usaremos una función personalizada
-            # para la evaluación que evite los problemas de sincronización
+            # Instead of using EvalCallback directly, use a custom function
+            # to avoid synchronization issues
             class CustomEvalCallback(BaseCallback):
                 def __init__(self, eval_env, eval_freq=10000, best_model_save_path=None, 
-                             log_path=None, deterministic=True, verbose=1):
+                            log_path=None, deterministic=True, verbose=1):
                     super().__init__(verbose)
                     self.eval_env = eval_env
                     self.eval_freq = eval_freq
@@ -343,7 +382,7 @@ class TrainingManager:
                     
                 def _on_step(self):
                     if self.n_calls % self.eval_freq == 0:
-                        # Evaluar el modelo sin intentar sincronizar normalización
+                        # Evaluate the model without trying to sync normalization
                         mean_reward, _ = evaluate_policy(
                             self.model, 
                             self.eval_env, 
@@ -353,9 +392,9 @@ class TrainingManager:
                         
                         if self.verbose > 0:
                             logger.info(f"Eval num_timesteps={self.num_timesteps}, " 
-                                       f"episode_reward={mean_reward:.2f}")
+                                    f"episode_reward={mean_reward:.2f}")
                         
-                        # Guardar mejor modelo
+                        # Save best model
                         if mean_reward > self.best_mean_reward:
                             self.best_mean_reward = mean_reward
                             if self.best_model_save_path is not None:
@@ -367,7 +406,7 @@ class TrainingManager:
                     
                     return True
             
-            # Crear nuestro callback personalizado
+            # Create our custom callback
             eval_callback = CustomEvalCallback(
                 test_env,
                 best_model_save_path=self.models_dir,
@@ -377,14 +416,15 @@ class TrainingManager:
             )
         
         # Training callback for logging
-        training_callback = TradingTrainingCallback(
+        training_callback_obj = TradingTrainingCallback(
             check_freq=5000,
             save_path=self.models_dir,
-            verbose=1
+            verbose=1,
+            training_callback=training_callback  # Pass the callback function
         )
         
         # Create callback list
-        callbacks = [training_callback]
+        callbacks = [training_callback_obj]
         if eval_callback:
             callbacks.append(eval_callback)
         

@@ -145,3 +145,5 @@
 2025-03-01 04:45:05,020 - INFO - Mean reward: nan, Mean episode length: nan
 2025-03-01 04:45:22,579 - INFO - Eval num_timesteps=10000, episode_reward=-0.57
 2025-03-01 04:45:22,616 - INFO - New best model saved with reward: -0.57
+2025-03-01 11:03:18,924 - INFO - Módulos de trading inicializados correctamente
+2025-03-01 11:45:29,680 - INFO - Módulos de trading inicializados correctamente

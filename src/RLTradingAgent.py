@@ -11,6 +11,17 @@ import gymnasium as gym
 from typing import Dict, List, Optional, Tuple, Union
 from datetime import datetime
 
+# Importación de tkinter messagebox (con manejo de error por si no está disponible)
+try:
+    from tkinter import messagebox
+except ImportError:
+    # Crear un reemplazo simple si tkinter no está disponible
+    class MessageboxStub:
+        @staticmethod
+        def showinfo(title, message):
+            print(f"[INFO] {title}: {message}")
+    messagebox = MessageboxStub()
+
 # Import Stable Baselines 3
 from stable_baselines3 import PPO, A2C, DQN
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
@@ -234,6 +245,19 @@ class NinjaTraderInterface:
                 pass
         
         logger.info("NinjaTrader interface stopped")
+
+    def cancel_extraction(self):
+        """Cancela la extracción de datos en curso"""
+        if self.is_extracting_data:
+            logger.info("Cancelando extracción de datos históricos")
+            self.is_extracting_data = False
+            self.extraction_complete = False
+            # Enviar mensaje de cancelación si es necesario
+            try:
+                if self.order_sender_socket and self.order_sender_socket.fileno() != -1:
+                    self.send_order_command("EXTRACTION_CANCEL\n")
+            except:
+                pass
     
     def data_receiver_loop(self):
         """Loop to receive market data from NinjaTrader"""
@@ -426,6 +450,44 @@ class NinjaTraderInterface:
         """Request historical data from NinjaTrader"""
         self.extraction_callback = callback
         
+        # Comprobar si existen datos extraídos previamente
+        data_dir = "data"
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+        
+        extracted_files = [f for f in os.listdir(data_dir) if f.startswith("extracted_data_") and f.endswith(".csv")]
+        
+        if extracted_files:
+            # Ordenar por fecha (más reciente primero)
+            extracted_files.sort(reverse=True)
+            latest_file = os.path.join(data_dir, extracted_files[0])
+            
+            # Verificar si los datos son recientes (menos de 1 día)
+            try:
+                file_stats = os.stat(latest_file)
+                file_time = datetime.fromtimestamp(file_stats.st_mtime)
+                time_diff = datetime.now() - file_time
+                
+                if time_diff.days < 1:
+                    logger.info(f"Datos recientes ya existentes: {latest_file}")
+                    
+                    # Notificar al usuario que los datos ya están actualizados
+                    if callback:
+                        # Usar callback con mensaje personalizado indicando que ya está actualizado
+                        callback(100, 100, 100.0, latest_file)
+                        
+                        # El parámetro filename indica que la extracción está completa
+                        # y el UI mostrará un mensaje de éxito
+                        return True
+                    
+                    # Si no hay callback, mostrar mensaje directamente
+                    messagebox.showinfo("Datos Actualizados", 
+                                    f"Los datos ya están actualizados (extraídos hace {time_diff.seconds//3600} horas).\n"
+                                    f"Archivo: {latest_file}")
+                    return True
+            except Exception as e:
+                logger.error(f"Error verificando archivo existente: {e}")
+        
         # Reset extraction state
         self.is_extracting_data = False
         self.extraction_complete = False
@@ -435,7 +497,7 @@ class NinjaTraderInterface:
         command = "EXTRACT_HISTORICAL_DATA\n"
         self.send_order_command(command)
         
-        logger.info("Historical data extraction request sent")
+        logger.info("Solicitud de extracción de datos históricos enviada")
         return True
     
     def order_sender_loop(self):

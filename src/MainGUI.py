@@ -320,7 +320,6 @@ class MainApplication(tk.Frame):
         # Inicializar datos de simulación
         self.initialize_simulation()
         
-    # Nuevo método para extraer datos de NinjaTrader
     def extract_data_from_ninjatrader(self):
         """Extrae datos históricos de NinjaTrader"""
         if not self.connected:
@@ -371,6 +370,18 @@ class MainApplication(tk.Frame):
         )
         progress_label.pack()
         
+        # Botón de cancelar
+        cancel_button = tk.Button(
+            frame,
+            text="Cancelar",
+            command=lambda: self.cancel_extraction(progress_window),
+            bg=COLORS['red'],
+            fg=COLORS['fg_white'],
+            font=('Segoe UI', 10),
+            padx=10
+        )
+        cancel_button.pack(pady=(10, 0))
+        
         # Callback para actualizar progreso
         def update_extraction_progress(current, total, percent, filename=None):
             if filename:
@@ -390,16 +401,11 @@ class MainApplication(tk.Frame):
                 file_label.pack(pady=(5, 0))
                 
                 # Cambiar a botón cerrar
-                close_button = tk.Button(
-                    frame,
+                cancel_button.config(
                     text="Cerrar",
                     command=progress_window.destroy,
-                    bg=COLORS['bg_medium'],
-                    fg=COLORS['fg_white'],
-                    padx=10
-                )
-                close_button.pack(pady=(10, 0))
-                
+                    bg=COLORS['bg_medium']
+                )                
                 # Mostrar mensaje en log
                 logger.info(f"Datos históricos extraídos correctamente: {filename}")
             else:
@@ -433,16 +439,11 @@ class MainApplication(tk.Frame):
                     progress_text.set("Error")
                     
                     # Cambiar a botón cerrar
-                    close_button = tk.Button(
-                        frame,
+                    cancel_button.config(
                         text="Cerrar",
                         command=progress_window.destroy,
-                        bg=COLORS['bg_medium'],
-                        fg=COLORS['fg_white'],
-                        padx=10
-                    )
-                    close_button.pack(pady=(10, 0))
-            
+                        bg=COLORS['bg_medium']
+                    )            
             except Exception as e:
                 logger.error(f"Error en extracción de datos: {e}")
                 
@@ -454,30 +455,22 @@ class MainApplication(tk.Frame):
                 progress_text.set("Error")
                 
                 # Cambiar a botón cerrar
-                close_button = tk.Button(
-                    frame,
+                cancel_button.config(
                     text="Cerrar",
                     command=progress_window.destroy,
-                    bg=COLORS['bg_medium'],
-                    fg=COLORS['fg_white'],
-                    padx=10
-                )
-                close_button.pack(pady=(10, 0))
-        
+                    bg=COLORS['bg_medium']
+                )        
         # Iniciar extracción en un hilo separado
         extraction_thread = threading.Thread(target=extraction_thread)
         extraction_thread.daemon = True
         extraction_thread.start()
-    
-    def toggle_pause(self, paused):
-        """Pausa o reanuda el proceso actual"""
-        self.paused = paused
-        logger.info(f"Proceso {'pausado' if paused else 'reanudado'}")
-        
-        # Si estamos en modo de entrenamiento, podría necesitar lógica adicional
-        if hasattr(self, 'training_manager') and self.training_manager:
-            # Aquí podría ir lógica específica para pausar el entrenamiento
-            pass
+
+    # Método nuevo para cancelar la extracción
+    def cancel_extraction(self, progress_window):
+        """Cancela la extracción de datos"""
+        if self.nt_interface:
+            self.nt_interface.cancel_extraction()
+        progress_window.destroy()
             
     def stop_process(self):
         """Detiene el proceso actual"""
@@ -637,15 +630,16 @@ class MainApplication(tk.Frame):
         else:
             messagebox.showinfo("Ayuda", "Tema de ayuda no disponible")
     
+    # En src/MainGUI.py - método show_about modificado
     def show_about(self):
         """Muestra información sobre la aplicación"""
         about_text = """RL Trading System v1.0
         
-Sistema de trading basado en Reinforcement Learning para NinjaTrader 8.
+    Sistema de trading basado en Reinforcement Learning para NinjaTrader 8.
 
-Desarrollado por: Juan Andres Valencia
-Contacto: jandresvc@outlook.com
-"""
+    Desarrollado por: Javier Lora
+    Contacto: jvlora@hublai.com
+    """
         messagebox.showinfo("Acerca de", about_text)
     
     def start_process(self, mode):

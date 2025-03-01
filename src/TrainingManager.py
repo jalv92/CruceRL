@@ -54,7 +54,7 @@ class TradingTrainingCallback(BaseCallback):
                 logger.info(f"New best model saved with reward: {mean_reward:.2f}")
         
         return True
-
+    
 
 class DataLoader:
     """Class to load and prepare financial data for RL training"""
@@ -87,48 +87,6 @@ class DataLoader:
         if timestamp_col:
             df[timestamp_col] = pd.to_datetime(df[timestamp_col])
             df.set_index(timestamp_col, inplace=True)
-        
-        return df
-    
-    def generate_synthetic_data(self, n_bars=10000, volatility=0.01, start_price=10000.0):
-        """Generate synthetic price data for testing"""
-        logger.info(f"Generating {n_bars} bars of synthetic data")
-        
-        # Generate timestamps
-        end_date = datetime.now()
-        start_date = end_date - timedelta(minutes=n_bars)
-        dates = pd.date_range(start=start_date, end=end_date, periods=n_bars)
-        
-        # Generate prices with random walk
-        price = start_price
-        prices = [price]
-        
-        for i in range(1, n_bars):
-            # Random price change with slight upward bias
-            change = np.random.normal(0.00005, volatility)
-            price *= (1 + change)
-            prices.append(price)
-        
-        prices = np.array(prices)
-        
-        # Create OHLC data
-        opens = prices * (1 + np.random.normal(0, volatility/5, n_bars))
-        highs = np.maximum(opens, prices) * (1 + np.abs(np.random.normal(0, volatility/2, n_bars)))
-        lows = np.minimum(opens, prices) * (1 - np.abs(np.random.normal(0, volatility/2, n_bars)))
-        
-        # Create DataFrame
-        df = pd.DataFrame({
-            'timestamp': dates,
-            'open': opens,
-            'high': highs,
-            'low': lows,
-            'close': prices
-        })
-        
-        df.set_index('timestamp', inplace=True)
-        
-        # Add technical indicators
-        df = self.add_technical_indicators(df)
         
         return df
     
@@ -182,21 +140,16 @@ class DataLoader:
             train_data, test_data as pandas DataFrames
         """
         if data is None and csv_file is None:
-            # Generate synthetic data if no real data provided
-            data = self.generate_synthetic_data(n_bars=max(10000, self.min_bars))
+            # No synthetic data generation - require real data
+            raise ValueError("No data provided. Please extract data from NinjaTrader or provide a DataFrame.")
         elif csv_file is not None:
             # Load data from CSV
             data = self.load_csv_data(csv_file)
             
             # Check if we have enough data
             if len(data) < self.min_bars:
-                logger.warning(f"CSV data has only {len(data)} bars, which is less than the required {self.min_bars}")
-                # Generate additional synthetic data if needed
-                additional_bars = self.min_bars - len(data)
-                if additional_bars > 0:
-                    logger.info(f"Generating {additional_bars} additional synthetic bars")
-                    synthetic_data = self.generate_synthetic_data(n_bars=additional_bars)
-                    data = pd.concat([synthetic_data, data])
+                logger.warning(f"CSV data has only {len(data)} bars, which is less than the recommended {self.min_bars}. " +
+                              f"Using available data without synthetic supplement.")
             
             # Add technical indicators if not present
             required_columns = ['ema_short', 'ema_long', 'atr', 'adx']

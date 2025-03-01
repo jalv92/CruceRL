@@ -21,3 +21,6 @@
 2025-03-01 00:35:43,920 - INFO - Iniciando proceso en modo: train
 2025-03-01 00:35:43,921 - INFO - Iniciando entrenamiento...
 2025-03-01 00:35:44,111 - ERROR - Error en entrenamiento: 'close'
+2025-03-01 02:49:01,704 - INFO - Módulos de trading inicializados correctamente
+2025-03-01 02:56:57,010 - INFO - Módulos de trading inicializados correctamente
+2025-03-01 03:07:02,419 - INFO - Módulos de trading inicializados correctamente

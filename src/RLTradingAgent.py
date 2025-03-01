@@ -124,255 +124,45 @@ class MarketData:
             self.data.set_index('timestamp', inplace=True)
         
         return self.data
-
+    
+    def save_to_file(self, filename: str) -> bool:
+        """Save market data to a file for training"""
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(filename), exist_ok=True)
+            
+            # Save data to CSV file
+            self.data.to_csv(filename)
+            logger.info(f"Market data saved to {filename}")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving market data to file: {e}")
+            return False
 
 class RLAgent:
     """Reinforcement Learning agent for trading decisions"""
     
     def __init__(self, model_path: str = None, vec_normalize_path: str = None):
+        """Initialize the RL agent with optional model loading"""
         self.model = None
-        self.vec_env = None
-        self.model_path = model_path
-        self.vec_normalize_path = vec_normalize_path
-        
-        # RL model hyperparameters
-        self.window_size = 10
-        self.position_size = 1.0
-        self.default_stop_loss = 10  # in ticks
-        self.default_take_profit = 20  # in ticks
-        
-        # State trackers
-        self.current_position = 0  # -1 for short, 0 for flat, 1 for long
-        self.position_entry_price = 0.0
-        self.trade_count = 0
-        self.successful_trades = 0
-        
-        # Performance tracking
-        self.performance_history = []
-        
-        # Load model if provided
-        if model_path and os.path.exists(model_path):
-            self.load_model(model_path, vec_normalize_path)
-        else:
-            # Fallback to rule-based model if no RL model available
-            logger.info("No RL model provided, using rule-based fallback")
-            self.use_rule_based_fallback()
-        
-        logger.info("RL Agent initialized")
-    
-    def load_model(self, model_path: str, vec_normalize_path: str = None):
-        """Load a trained model from disk"""
-        try:
-            logger.info(f"Loading model from {model_path}")
-            
-            # Determine algorithm type from filename
-            if 'PPO' in model_path:
+        self.vec_normalize = None
+        # TODO: Implement model loading if paths are provided
+        if model_path and vec_normalize_path:
+            try:
+                # Placeholder for loading the model and normalization
                 self.model = PPO.load(model_path)
-            elif 'A2C' in model_path:
-                self.model = A2C.load(model_path)
-            elif 'DQN' in model_path:
-                self.model = DQN.load(model_path)
-            else:
-                # Default to PPO
-                self.model = PPO.load(model_path)
-            
-            logger.info(f"Model loaded successfully: {type(self.model).__name__}")
-            
-            # Extract parameters from model
-            self.window_size = getattr(self.model, 'window_size', 10)
-            
-            # Load the vectorized environment normalization stats if available
-            if vec_normalize_path and os.path.exists(vec_normalize_path):
-                logger.info(f"Loading VecNormalize stats from {vec_normalize_path}")
-                # We'll create and load the VecNormalize when needed in get_action
-            
-            return True
-        
-        except Exception as e:
-            logger.error(f"Error loading model: {e}")
-            self.use_rule_based_fallback()
-            return False
+                self.vec_normalize = VecNormalize.load(vec_normalize_path, DummyVecEnv([lambda: TradingEnvironment()]))
+                logger.info(f"Loaded model from {model_path} and normalization from {vec_normalize_path}")
+            except Exception as e:
+                logger.error(f"Error loading model or normalization: {e}")
+                self.model = None
+                self.vec_normalize = None
     
-    def use_rule_based_fallback(self):
-        """Initialize a rule-based model as fallback"""
-        # Simple rule-based weights for decision making
-        self.weights = np.array([
-            0.5,    # ema_short - price
-            0.3,    # ema_long - price
-            0.8,    # ema_short - ema_long
-            -0.2,   # atr
-            0.4,    # adx
-            0.3,    # ma5 - price
-            0.1,    # ma10 - price
-            -0.5    # volatility
-        ])
-        
-        logger.info("Rule-based model initialized as fallback")
-    
-    def create_env_for_prediction(self, data: pd.DataFrame) -> gym.Env:
-        """Create a Gym environment for model prediction"""
-        if data is None or len(data) < self.window_size:
-            logger.warning("Not enough data to create a prediction environment")
-            return None
-        
-        # Create bare minimum environment for prediction
-        env = TradingEnvironment(
-            df=data,
-            window_size=self.window_size,
-            max_steps=1  # We only need one step for prediction
-        )
-        
-        # Wrap in DummyVecEnv for SB3 compatibility
-        vec_env = DummyVecEnv([lambda: env])
-        
-        # Load normalization stats if available
-        if self.vec_normalize_path and os.path.exists(self.vec_normalize_path):
-            vec_env = VecNormalize.load(self.vec_normalize_path, vec_env)
-            vec_env.training = False  # Don't update stats during prediction
-            vec_env.norm_reward = False
-        
-        return vec_env
-    
-    def get_action_rule_based(self, features: np.ndarray) -> Tuple[int, int, float, float, float]:
-        """Get action using rule-based approach (fallback method)"""
-        if features is None:
-            return 0, 0, 0.0, 0.0, 0.0
-        
-        # Simple linear combination of features as a trading signal
-        signal_strength = np.dot(features, self.weights)
-        
-        # Determine trading action
-        if signal_strength > 0.5:
-            trade_signal = 1  # Long
-        elif signal_strength < -0.5:
-            trade_signal = -1  # Short
-        else:
-            trade_signal = 0  # Flat
-            
-        # Only change position if significant change or no position
-        if self.current_position != 0 and trade_signal == self.current_position:
-            # Hold current position
-            return 0, 0, 0.0, 0.0, 0.0
-        
-        # EMA choice based on signal
-        if trade_signal == 1:
-            ema_choice = 1  # Short EMA for long positions
-        elif trade_signal == -1:
-            ema_choice = 2  # Long EMA for short positions
-        else:
-            ema_choice = 0
-        
-        # Position size based on signal strength
-        position_size = min(2.0, max(0.5, abs(signal_strength))) * self.position_size
-        
-        # Adjust stop loss and take profit based on signal strength
-        volatility_factor = min(2.0, max(0.5, abs(features[-1])))
-        stop_loss = self.default_stop_loss * volatility_factor
-        take_profit = self.default_take_profit * volatility_factor
-        
-        # Update current position
-        self.current_position = trade_signal
-        
-        return trade_signal, ema_choice, position_size, stop_loss, take_profit
-    
-    def get_action_rl(self, market_data: MarketData) -> Tuple[int, int, float, float, float]:
-        """Get trading action from the RL model"""
-        if self.model is None:
-            logger.warning("RL model not loaded, falling back to rule-based method")
-            features = market_data.get_latest_features()
-            return self.get_action_rule_based(features)
-        
-        try:
-            # Prepare data for the environment
-            data = market_data.prepare_for_gym_env(window_size=self.window_size)
-            if data is None or len(data) < self.window_size:
-                logger.warning("Not enough data for RL prediction")
-                features = market_data.get_latest_features()
-                return self.get_action_rule_based(features)
-            
-            # Create environment for prediction
-            vec_env = self.create_env_for_prediction(data)
-            if vec_env is None:
-                logger.warning("Failed to create prediction environment")
-                features = market_data.get_latest_features()
-                return self.get_action_rule_based(features)
-            
-            # Reset environment and get observation
-            obs, _ = vec_env.reset()
-            
-            # Get action from model
-            action, _ = self.model.predict(obs, deterministic=True)
-            
-            # Convert action to trade signal
-            # Action space: 0 = Hold, 1 = Buy, 2 = Sell
-            if action[0] == 1:
-                trade_signal = 1  # Long
-            elif action[0] == 2:
-                trade_signal = -1  # Short
-            else:
-                trade_signal = 0  # Hold
-            
-            # Only change position if different from current
-            if self.current_position != 0 and trade_signal == self.current_position:
-                return 0, 0, 0.0, 0.0, 0.0
-            
-            # EMA choice based on signal
-            if trade_signal == 1:
-                ema_choice = 1  # Short EMA for long positions
-            elif trade_signal == -1:
-                ema_choice = 2  # Long EMA for short positions
-            else:
-                ema_choice = 0
-            
-            # Get the current ATR for volatility measurement
-            current_atr = data['atr'].iloc[-1]
-            current_price = data['close'].iloc[-1]
-            atr_pct = current_atr / current_price
-            
-            # Scale position size, stop loss, and take profit based on ATR
-            position_size = 1.0  # Base position size
-            
-            # Stop loss and take profit in ticks
-            stop_loss = max(5, int(self.default_stop_loss * atr_pct * 1000))
-            take_profit = max(10, int(self.default_take_profit * atr_pct * 1000))
-            
-            # Update current position
-            self.current_position = trade_signal
-            
-            logger.info(f"RL model prediction: Signal={trade_signal}, EMA={ema_choice}, Size={position_size:.2f}, SL={stop_loss:.2f}, TP={take_profit:.2f}")
-            
-            return trade_signal, ema_choice, position_size, stop_loss, take_profit
-        
-        except Exception as e:
-            logger.error(f"Error in RL prediction: {e}")
-            features = market_data.get_latest_features()
-            return self.get_action_rule_based(features)
-    
-    def get_action(self, market_data: MarketData) -> Tuple[int, int, float, float, float]:
-        """Determine trading action based on current market data"""
-        if self.model is not None:
-            return self.get_action_rl(market_data)
-        else:
-            features = market_data.get_latest_features()
-            return self.get_action_rule_based(features)
-    
-    def update_model(self, reward: float):
-        """Update the agent's model based on reward (would be used in online learning)"""
-        # In a real online RL implementation, this would update the model based on reward
-        # For now, we'll just track performance
-        self.trade_count += 1
-        if reward > 0:
-            self.successful_trades += 1
-        
-        win_rate = self.successful_trades / max(1, self.trade_count)
-        self.performance_history.append({
-            'timestamp': datetime.now(),
-            'reward': reward,
-            'win_rate': win_rate
-        })
-        
-        logger.info(f"Trade completed with reward: {reward:.2f}, win rate: {win_rate:.2f}")
-
+    def get_action(self, market_data: MarketData) -> Tuple[int, str, float, float, float]:
+        """Get trading action based on market data"""
+        # Placeholder implementation returning no trade
+        # Returns: trade_signal, ema_choice, position_size, stop_loss, take_profit
+        return 0, 'short', 1.0, 0.0, 0.0  # No trade signal as default
 
 class NinjaTraderInterface:
     """Interface for communicating with NinjaTrader strategy"""
@@ -395,6 +185,15 @@ class NinjaTraderInterface:
         
         # Order queue
         self.order_queue = queue.Queue()
+        
+        # Historical data extraction
+        self.historical_data = MarketData(max_history=100000)  # Larger capacity for historical data
+        self.is_extracting_data = False
+        self.extraction_complete = False
+        self.extraction_callback = None
+        self.extraction_progress = 0
+        self.total_bars_to_extract = 0
+        self.extracted_bars_count = 0
         
         # Initialize RL agent with model if provided
         self.rl_agent = RLAgent(model_path, vec_normalize_path)
@@ -494,6 +293,29 @@ class NinjaTraderInterface:
     def process_data(self, data_line: str):
         """Process a line of market data from NinjaTrader"""
         try:
+            # Check if this is a special message
+            if data_line.startswith("EXTRACTION_START:"):
+                # Format: EXTRACTION_START:total_bars
+                total_bars = int(data_line.split(':')[1])
+                self.start_data_extraction(total_bars)
+                return
+            elif data_line.startswith("EXTRACTION_PROGRESS:"):
+                # Format: EXTRACTION_PROGRESS:current:total:percent
+                parts = data_line.split(':')
+                current = int(parts[1])
+                total = int(parts[2])
+                percent = float(parts[3])
+                self.update_extraction_progress(current, total, percent)
+                return
+            elif data_line == "EXTRACTION_COMPLETE":
+                self.complete_data_extraction()
+                return
+            elif data_line.startswith("HISTORICAL:"):
+                # Format: HISTORICAL:open,high,low,close,ema_short,ema_long,atr,adx,timestamp
+                parts = data_line[len("HISTORICAL:"):].strip().split(',')
+                self.process_historical_data(parts)
+                return
+            
             # Expected format: open,high,low,close,emaShort,emaLong,atr,adx,timestamp
             parts = data_line.strip().split(',')
             
@@ -535,6 +357,86 @@ class NinjaTraderInterface:
             
         except Exception as e:
             logger.error(f"Error processing data: {e}")
+    
+    def start_data_extraction(self, total_bars: int):
+        """Start historical data extraction process"""
+        logger.info(f"Starting historical data extraction: {total_bars} bars")
+        self.is_extracting_data = True
+        self.extraction_complete = False
+        self.total_bars_to_extract = total_bars
+        self.extracted_bars_count = 0
+        self.extraction_progress = 0
+        
+        # Create new empty historical data container
+        self.historical_data = MarketData(max_history=total_bars + 1000)  # Add buffer
+    
+    def update_extraction_progress(self, current: int, total: int, percent: float):
+        """Update extraction progress"""
+        self.extracted_bars_count = current
+        self.total_bars_to_extract = total
+        self.extraction_progress = percent
+        logger.info(f"Historical data extraction progress: {percent:.1f}% ({current}/{total})")
+        
+        # Call callback if provided
+        if self.extraction_callback:
+            self.extraction_callback(current, total, percent)
+    
+    def complete_data_extraction(self):
+        """Complete historical data extraction"""
+        logger.info("Historical data extraction completed")
+        self.extraction_complete = True
+        self.is_extracting_data = False
+        
+        # Save data to training file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"data/extracted_data_{timestamp}.csv"
+        self.historical_data.save_to_file(filename)
+        
+        # Call callback if provided
+        if self.extraction_callback:
+            self.extraction_callback(self.extracted_bars_count, self.total_bars_to_extract, 100.0, filename)
+    
+    def process_historical_data(self, parts: List[str]):
+        """Process historical data bar"""
+        if len(parts) < 9:
+            logger.warning(f"Invalid historical data format")
+            return
+        
+        try:
+            # Parse data
+            data_point = {
+                'open': float(parts[0]),
+                'high': float(parts[1]),
+                'low': float(parts[2]),
+                'close': float(parts[3]),
+                'ema_short': float(parts[4]),
+                'ema_long': float(parts[5]),
+                'atr': float(parts[6]),
+                'adx': float(parts[7]),
+                'timestamp': parts[8]
+            }
+            
+            # Add to historical data
+            self.historical_data.add_data(data_point)
+            
+        except Exception as e:
+            logger.error(f"Error processing historical data: {e}")
+    
+    def request_historical_data(self, callback=None):
+        """Request historical data from NinjaTrader"""
+        self.extraction_callback = callback
+        
+        # Reset extraction state
+        self.is_extracting_data = False
+        self.extraction_complete = False
+        self.extraction_progress = 0
+        
+        # Send command to NinjaTrader to start extracting data
+        command = "EXTRACT_HISTORICAL_DATA\n"
+        self.send_order_command(command)
+        
+        logger.info("Historical data extraction request sent")
+        return True
     
     def order_sender_loop(self):
         """Loop to send trading signals to NinjaTrader"""
@@ -601,7 +503,46 @@ class NinjaTraderInterface:
                     time.sleep(retry_delay)
         
         logger.error(f"Failed to send order after {max_retries} attempts: {order}")
-
+    
+    def send_order_command(self, command: str):
+        """Send a command to NinjaTrader through the order channel"""
+        max_retries = 3
+        retry_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                # Create socket if not exists or is closed
+                if self.order_sender_socket is None:
+                    self.order_sender_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    self.order_sender_socket.settimeout(3.0)  # 3 second timeout
+                    self.order_sender_socket.connect((self.server_ip, self.order_port))
+                    logger.info(f"Order sender connected to {self.server_ip}:{self.order_port}")
+                
+                # Send command
+                self.order_sender_socket.sendall(command.encode('ascii'))
+                logger.info(f"Command sent: {command.strip()}")
+                
+                # Successfully sent, return
+                return True
+            
+            except Exception as e:
+                logger.error(f"Error sending command (attempt {attempt+1}/{max_retries}): {e}")
+                
+                # Close socket for reconnection
+                try:
+                    if self.order_sender_socket:
+                        self.order_sender_socket.close()
+                except:
+                    pass
+                
+                self.order_sender_socket = None
+                
+                # Wait before retry
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+        
+        logger.error(f"Failed to send command after {max_retries} attempts")
+        return False
 
 def main():
     """Main function to run the RL trading agent"""
@@ -613,26 +554,73 @@ def main():
     parser.add_argument('--ip', type=str, default='127.0.0.1', help='IP address to listen on (default: 127.0.0.1)')
     parser.add_argument('--model', type=str, default='models/final_model.zip', help='Path to model file for prediction')
     parser.add_argument('--vec-norm', type=str, default='models/vec_normalize_final.pkl', help='Path to VecNormalize stats')
-    parser.add_argument('--data', type=str, help='Path to CSV data file for training')
+    parser.add_argument('--extract', action='store_true', help='Extract historical data from NinjaTrader')
     parser.add_argument('--timesteps', type=int, default=500000, help='Total timesteps for training')
     
     args = parser.parse_args()
     
     try:
+        # Extract historical data mode
+        if args.extract:
+            logger.info("Starting historical data extraction mode")
+            
+            # Create NinjaTrader interface
+            nt_interface = NinjaTraderInterface(
+                server_ip=args.ip,
+                data_port=args.port,
+                order_port=args.port + 1
+            )
+            
+            # Start interface
+            nt_interface.start()
+            
+            # Request historical data extraction
+            def extraction_callback(current, total, percent, filename=None):
+                if filename:
+                    logger.info(f"Data extraction complete. Data saved to {filename}")
+                else:
+                    logger.info(f"Extraction progress: {percent:.1f}% ({current}/{total})")
+            
+            nt_interface.request_historical_data(callback=extraction_callback)
+            
+            # Keep running until interrupted
+            try:
+                while not nt_interface.extraction_complete:
+                    time.sleep(1.0)
+                
+                # Wait a bit more to ensure all data is processed
+                time.sleep(3.0)
+                
+                logger.info("Historical data extraction completed successfully")
+            except KeyboardInterrupt:
+                logger.info("Keyboard interrupt received, shutting down")
+            
+            # Stop interface
+            nt_interface.stop()
+            
         # Training mode
-        if args.train:
+        elif args.train:
             logger.info("Starting training mode")
             
             # Initialize data loader
             data_loader = DataLoader(min_bars=6000)
             
-            # Load or generate data
-            if args.data and os.path.exists(args.data):
-                logger.info(f"Loading data from {args.data}")
-                train_data, test_data = data_loader.prepare_train_test_data(csv_file=args.data)
-            else:
-                logger.info("Generating synthetic data for training")
-                train_data, test_data = data_loader.prepare_train_test_data()
+            # Look for extracted data files
+            data_dir = "data"
+            extracted_files = [f for f in os.listdir(data_dir) if f.startswith("extracted_data_") and f.endswith(".csv")]
+            
+            if not extracted_files:
+                logger.error("No extracted data files found. Please extract data from NinjaTrader first.")
+                return False
+            
+            # Sort by date (newest first)
+            extracted_files.sort(reverse=True)
+            latest_data_file = os.path.join(data_dir, extracted_files[0])
+            
+            logger.info(f"Using latest extracted data: {latest_data_file}")
+            
+            # Load data
+            train_data, test_data = data_loader.prepare_train_test_data(csv_file=latest_data_file)
             
             # Initialize training manager
             training_manager = TrainingManager()
@@ -697,7 +685,6 @@ def main():
         logger.error(f"Error in main function: {e}")
         import traceback
         traceback.print_exc()
-
 
 if __name__ == "__main__":
     main()

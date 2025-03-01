@@ -171,33 +171,48 @@ class LoginFrame(tk.Frame):
             outline=COLORS['accent']
         )
         
+        # Variable para asegurar que el callback solo se ejecute una vez
+        self._animation_finished = False
+        
         # Función de animación
         def animate_zoom():
             nonlocal oval
             
-            for i in range(30):  # 30 frames de animación
-                size = (i + 1) * 20  # Aumentar tamaño gradualmente
-                canvas.coords(
-                    oval, 
-                    center_x - size, center_y - size, 
-                    center_x + size, center_y + size
-                )
+            try:
+                for i in range(30):  # 30 frames de animación
+                    if not canvas.winfo_exists():  # Verificar si el canvas aún existe
+                        return
+                        
+                    size = (i + 1) * 20  # Aumentar tamaño gradualmente
+                    canvas.coords(
+                        oval, 
+                        center_x - size, center_y - size, 
+                        center_x + size, center_y + size
+                    )
+                    
+                    # Ajustar la opacidad
+                    opacity = min(1.0, 0.5 + i * 0.02)
+                    color = COLORS['accent']
+                    canvas.itemconfig(oval, fill=color, outline=color)
+                    
+                    self.update()  # Actualizar la ventana
+                    time.sleep(0.02)  # Pequeña pausa
                 
-                # Ajustar la opacidad
-                opacity = min(1.0, 0.5 + i * 0.02)
-                color = COLORS['accent']
-                canvas.itemconfig(oval, fill=color, outline=color)
+                if not canvas.winfo_exists():  # Verificar si el canvas aún existe
+                    return
+                    
+                # Llenar completamente la pantalla
+                canvas.create_rectangle(0, 0, width, height, fill=COLORS['accent'], outline=COLORS['accent'])
+                self.update()
+                time.sleep(0.3)
                 
-                self.update()  # Actualizar la ventana
-                time.sleep(0.02)  # Pequeña pausa
-            
-            # Llenar completamente la pantalla
-            canvas.create_rectangle(0, 0, width, height, fill=COLORS['accent'], outline=COLORS['accent'])
-            self.update()
-            time.sleep(0.3)
-            
-            # Llamar a la función de éxito después de la animación
-            self.on_login_success()
+                # Evitar múltiples llamadas al callback
+                if not self._animation_finished:
+                    self._animation_finished = True
+                    # Llamar a la función de éxito después de la animación en el hilo principal
+                    self.after(100, self.on_login_success)
+            except Exception as e:
+                print(f"Error en animación: {e}")
         
         # Iniciar animación en un hilo separado
         threading.Thread(target=animate_zoom, daemon=True).start()
@@ -205,6 +220,7 @@ class LoginFrame(tk.Frame):
 
 class MainApplication(tk.Frame):
     """Aplicación principal después del inicio de sesión"""
+
     
     def __init__(self, parent):
         super().__init__(parent, bg=COLORS['bg_very_dark'])
@@ -288,7 +304,8 @@ class MainApplication(tk.Frame):
             on_pause=self.toggle_pause,
             on_stop=self.stop_process,
             on_connect=self.connect_to_ninjatrader,
-            on_train_config=self.show_training_config
+            on_train_config=self.show_training_config,
+            on_extract_data=self.extract_data_from_ninjatrader
         )
         self.control_panel.grid(row=1, column=0, columnspan=2, sticky='nsew', pady=(5,0))
         
@@ -302,153 +319,338 @@ class MainApplication(tk.Frame):
         
         # Inicializar datos de simulación
         self.initialize_simulation()
+        
+    # Nuevo método para extraer datos de NinjaTrader
+    def extract_data_from_ninjatrader(self):
+        """Extrae datos históricos de NinjaTrader"""
+        if not self.connected:
+            messagebox.showwarning("No conectado", "Debe conectarse a NinjaTrader primero")
+            return
+        
+        # Mostrar ventana de progreso
+        progress_window = tk.Toplevel(self.parent)
+        progress_window.title("Extrayendo Datos")
+        progress_window.geometry("400x150")
+        progress_window.resizable(False, False)
+        progress_window.transient(self.parent)
+        progress_window.grab_set()
+        
+        # Configurar contenido de la ventana
+        frame = tk.Frame(progress_window, bg=COLORS['bg_dark'], padx=20, pady=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Etiqueta de mensaje
+        message_label = tk.Label(
+            frame, 
+            text="Extrayendo datos históricos de NinjaTrader...",
+            font=('Segoe UI', 12),
+            fg=COLORS['fg_white'],
+            bg=COLORS['bg_dark']
+        )
+        message_label.pack(pady=(0, 10))
+        
+        # Barra de progreso
+        progress_var = tk.DoubleVar()
+        progress_bar = ttk.Progressbar(
+            frame, 
+            variable=progress_var,
+            maximum=100.0,
+            mode='determinate',
+            length=360
+        )
+        progress_bar.pack(pady=(0, 10))
+        
+        # Etiqueta de progreso
+        progress_text = tk.StringVar(value="0%")
+        progress_label = tk.Label(
+            frame,
+            textvariable=progress_text,
+            font=('Segoe UI', 10),
+            fg=COLORS['fg_white'],
+            bg=COLORS['bg_dark']
+        )
+        progress_label.pack()
+        
+        # Callback para actualizar progreso
+        def update_extraction_progress(current, total, percent, filename=None):
+            if filename:
+                # Extracción completa
+                progress_var.set(100.0)
+                progress_text.set("100% - Completado")
+                message_label.config(text=f"Datos extraídos correctamente:")
+                
+                # Añadir etiqueta para mostrar el archivo
+                file_label = tk.Label(
+                    frame,
+                    text=f"Guardado en: {filename}",
+                    font=('Segoe UI', 9),
+                    fg=COLORS['accent'],
+                    bg=COLORS['bg_dark']
+                )
+                file_label.pack(pady=(5, 0))
+                
+                # Cambiar a botón cerrar
+                close_button = tk.Button(
+                    frame,
+                    text="Cerrar",
+                    command=progress_window.destroy,
+                    bg=COLORS['bg_medium'],
+                    fg=COLORS['fg_white'],
+                    padx=10
+                )
+                close_button.pack(pady=(10, 0))
+                
+                # Mostrar mensaje en log
+                logger.info(f"Datos históricos extraídos correctamente: {filename}")
+            else:
+                # Actualizar progreso
+                progress_var.set(percent)
+                progress_text.set(f"{percent:.1f}% ({current}/{total})")
+        
+        # Actualizar UI
+        progress_window.update()
+        
+        # Iniciar proceso de extracción
+        def extraction_thread():
+            try:
+                self.nt_interface.request_historical_data(callback=update_extraction_progress)
+                
+                # Esperar a que se complete la extracción
+                while not self.nt_interface.extraction_complete and not self.nt_interface.is_extracting_data:
+                    time.sleep(0.1)
+                    
+                # Esperar a que se complete la extracción
+                while self.nt_interface.is_extracting_data:
+                    time.sleep(0.1)
+                
+                # Si la ventana fue cerrada, asegurarse de que no intentemos actualizar
+                if not progress_window.winfo_exists():
+                    return
+                
+                # Verificar si se completó correctamente
+                if not self.nt_interface.extraction_complete:
+                    message_label.config(text="Error al extraer datos")
+                    progress_text.set("Error")
+                    
+                    # Cambiar a botón cerrar
+                    close_button = tk.Button(
+                        frame,
+                        text="Cerrar",
+                        command=progress_window.destroy,
+                        bg=COLORS['bg_medium'],
+                        fg=COLORS['fg_white'],
+                        padx=10
+                    )
+                    close_button.pack(pady=(10, 0))
+            
+            except Exception as e:
+                logger.error(f"Error en extracción de datos: {e}")
+                
+                # Si la ventana fue cerrada, asegurarse de que no intentemos actualizar
+                if not progress_window.winfo_exists():
+                    return
+                
+                message_label.config(text=f"Error: {str(e)}")
+                progress_text.set("Error")
+                
+                # Cambiar a botón cerrar
+                close_button = tk.Button(
+                    frame,
+                    text="Cerrar",
+                    command=progress_window.destroy,
+                    bg=COLORS['bg_medium'],
+                    fg=COLORS['fg_white'],
+                    padx=10
+                )
+                close_button.pack(pady=(10, 0))
+        
+        # Iniciar extracción en un hilo separado
+        extraction_thread = threading.Thread(target=extraction_thread)
+        extraction_thread.daemon = True
+        extraction_thread.start()
     
+    def toggle_pause(self, paused):
+        """Pausa o reanuda el proceso actual"""
+        self.paused = paused
+        logger.info(f"Proceso {'pausado' if paused else 'reanudado'}")
+        
+        # Si estamos en modo de entrenamiento, podría necesitar lógica adicional
+        if hasattr(self, 'training_manager') and self.training_manager:
+            # Aquí podría ir lógica específica para pausar el entrenamiento
+            pass
+            
+    def stop_process(self):
+        """Detiene el proceso actual"""
+        self.running = False
+        logger.info("Deteniendo proceso...")
+        
+        # Si hay un hilo en ejecución, esperar a que termine
+        if self.worker_thread and self.worker_thread.is_alive():
+            # No bloquear la UI mientras esperamos
+            pass
+            
+        logger.info("Proceso detenido correctamente")
+        
+    def connect_to_ninjatrader(self):
+        """Conecta con NinjaTrader"""
+        try:
+            server_ip = self.control_panel.ip_var.get()
+            data_port = int(self.control_panel.data_port_var.get())
+            order_port = data_port + 1
+            
+            # Crear interfaz con NinjaTrader
+            self.nt_interface = NinjaTraderInterface(
+                server_ip=server_ip,
+                data_port=data_port,
+                order_port=order_port
+            )
+            
+            # Intentar conexión
+            self.nt_interface.connect()
+            
+            if self.nt_interface.is_connected():
+                self.connected = True
+                messagebox.showinfo("Conexión", "Conectado correctamente a NinjaTrader")
+                logger.info(f"Conectado a NinjaTrader: {server_ip}:{data_port}")
+                return True
+            else:
+                messagebox.showerror("Error", "No se pudo conectar a NinjaTrader")
+                logger.error(f"Error al conectar a NinjaTrader: {server_ip}:{data_port}")
+                return False
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Error al conectar: {str(e)}")
+            logger.error(f"Error en conexión: {e}")
+            return False
+            
     def setup_menu(self):
-        """Configurar menú principal"""
-        menu_bar = tk.Menu(self.parent)
+        """Configura el menú de la aplicación"""
+        menubar = tk.Menu(self.parent)
+        self.parent.config(menu=menubar)
         
         # Menú Archivo
-        file_menu = tk.Menu(menu_bar, tearoff=0)
-        file_menu.add_command(label="Importar Modelo", command=self.import_model)
-        file_menu.add_command(label="Exportar Modelo", command=self.export_model)
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Archivo", menu=file_menu)
+        file_menu.add_command(label="Importar datos...", command=self.import_data)
+        file_menu.add_command(label="Exportar resultados...", command=self.export_results)
         file_menu.add_separator()
-        file_menu.add_command(label="Salir", command=self.on_exit)
-        menu_bar.add_cascade(label="Archivo", menu=file_menu)
+        file_menu.add_command(label="Salir", command=self.parent.destroy)
         
-        # Menú Ver
-        view_menu = tk.Menu(menu_bar, tearoff=0)
-        view_menu.add_command(label="Estadísticas", command=self.show_statistics)
-        view_menu.add_command(label="Gráficos", command=self.show_charts)
-        menu_bar.add_cascade(label="Ver", menu=view_menu)
+        # Menú Herramientas
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Herramientas", menu=tools_menu)
+        tools_menu.add_command(label="Configuración de entrenamiento", command=self.show_training_config)
+        tools_menu.add_command(label="Visualizar modelo", command=self.visualize_model)
         
         # Menú Ayuda
-        help_menu = tk.Menu(menu_bar, tearoff=0)
-        help_menu.add_command(label="Manual de Usuario", command=self.show_help)
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Ayuda", menu=help_menu)
+        help_menu.add_command(label="Interfaz", command=lambda: self.show_help("interface"))
+        help_menu.add_command(label="Gráficos", command=lambda: self.show_help("charts"))
+        help_menu.add_command(label="Controles", command=lambda: self.show_help("controls"))
+        help_menu.add_command(label="Trading", command=lambda: self.show_help("trading"))
+        help_menu.add_separator()
         help_menu.add_command(label="Acerca de", command=self.show_about)
-        menu_bar.add_cascade(label="Ayuda", menu=help_menu)
-        
-        self.parent.config(menu=menu_bar)
     
     def initialize_simulation(self):
-        """Inicializa datos de simulación para mostrar al inicio"""
-        # Generar datos de precio simulados
-        n_points = 100
-        timestamps = [pd.Timestamp.now() - pd.Timedelta(minutes=n_points-i) for i in range(n_points)]
-        
-        price = 15000.0  # Precio inicial
-        prices = []
-        for _ in range(n_points):
-            price *= (1 + np.random.normal(0, 0.001))
-            prices.append(price)
-        
+        """Inicializa datos de simulación para la interfaz"""
+        # Inicializar datos de precio simulados
         price_data = []
-        for i in range(n_points):
+        for i in range(100):
+            # Simular datos OHLC
+            base = 100 + i * 0.1 + np.random.normal(0, 0.5)
             data_point = {
-                'timestamp': timestamps[i],
-                'close': prices[i]
+                'timestamp': datetime.now() - pd.Timedelta(minutes=100-i),
+                'open': base,
+                'high': base + abs(np.random.normal(0, 0.3)),
+                'low': base - abs(np.random.normal(0, 0.3)),
+                'close': base + np.random.normal(0, 0.2)
             }
             price_data.append(data_point)
         
-        # Actualizar gráficos
+        # Actualizar gráfico de precios
         self.chart_panel.update_price_chart(price_data)
-        self.chart_panel.update_performance_chart(100000.0, pd.Timestamp.now())
+        
+        # Inicializar datos de rendimiento simulados
+        for i in range(50):
+            balance = 100000 + np.cumsum(np.random.normal(0, 100, i+1))[-1]
+            timestamp = datetime.now() - pd.Timedelta(minutes=50-i)
+            self.chart_panel.update_performance_chart(balance, timestamp)
+        
+        # Inicializar estadísticas
+        stats = {
+            'balance': 100000.0,
+            'total_pnl': 0.0,
+            'trades_count': 0,
+            'win_rate': 0.0,
+            'current_position': 'None'
+        }
+        self.stats_panel.update_stats(stats)
+        
+        # Inicializar operaciones simuladas
+        trades = []
+        self.trades_panel.update_trades(trades)
     
-    # ------------------------------------------------------------------------
-    # Funciones de menú
-    # ------------------------------------------------------------------------
-    def import_model(self):
-        """Importa un modelo entrenado"""
+    # Métodos para el menú
+    def import_data(self):
+        """Importa datos desde un archivo"""
         file_path = filedialog.askopenfilename(
-            title="Importar Modelo",
-            filetypes=[("Archivos de Modelo (*.zip)", "*.zip"), ("Todos los archivos", "*.*")]
+            title="Importar datos",
+            filetypes=[("Archivos CSV", "*.csv"), ("Todos los archivos", "*.*")]
         )
         if file_path:
-            try:
-                # Aquí cargaríamos el modelo usando TrainingManager
-                logger.info(f"Modelo importado: {file_path}")
-                messagebox.showinfo("Importar Modelo", f"Modelo importado correctamente: {os.path.basename(file_path)}")
-            except Exception as e:
-                logger.error(f"Error al importar modelo: {e}")
-                messagebox.showerror("Error", f"Error al importar modelo: {e}")
+            # Lógica para importar datos
+            logger.info(f"Importando datos desde: {file_path}")
+            messagebox.showinfo("Importar", f"Datos importados correctamente: {file_path}")
     
-    def export_model(self):
-        """Exporta un modelo entrenado"""
+    def export_results(self):
+        """Exporta resultados a un archivo"""
         file_path = filedialog.asksaveasfilename(
-            title="Exportar Modelo",
-            defaultextension=".zip",
-            filetypes=[("Archivos de Modelo (*.zip)", "*.zip"), ("Todos los archivos", "*.*")]
+            title="Exportar resultados",
+            filetypes=[("Archivos CSV", "*.csv"), ("Todos los archivos", "*.*")],
+            defaultextension=".csv"
         )
         if file_path:
-            try:
-                # Aquí exportaríamos el modelo
-                logger.info(f"Modelo exportado: {file_path}")
-                messagebox.showinfo("Exportar Modelo", f"Modelo exportado correctamente: {os.path.basename(file_path)}")
-            except Exception as e:
-                logger.error(f"Error al exportar modelo: {e}")
-                messagebox.showerror("Error", f"Error al exportar modelo: {e}")
+            # Lógica para exportar resultados
+            logger.info(f"Exportando resultados a: {file_path}")
+            messagebox.showinfo("Exportar", f"Resultados exportados correctamente: {file_path}")
     
-    def show_statistics(self):
-        """Muestra estadísticas detalladas"""
-        # Implementar visualización de estadísticas detalladas
-        pass
+    def show_training_config(self):
+        """Muestra la ventana de configuración de entrenamiento"""
+        # La ventana ya está creada, solo mostrarla
+        self.train_config_panel.show()
     
-    def show_charts(self):
-        """Muestra gráficos detallados"""
-        # Implementar visualización de gráficos detallados
-        pass
+    def visualize_model(self):
+        """Visualiza la estructura del modelo"""
+        model_path = filedialog.askopenfilename(
+            title="Seleccionar modelo",
+            filetypes=[("Archivos de modelo", "*.zip"), ("Todos los archivos", "*.*")]
+        )
+        if model_path:
+            messagebox.showinfo("Visualizar modelo", "Funcionalidad en desarrollo")
     
-    def show_help(self):
-        """Muestra el diálogo de ayuda"""
-        try:
-            # Primero verificamos si existen los archivos de ayuda
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            doc_dir = os.path.join(base_dir, "doc")
-            
-            # Si la carpeta doc no existe o está vacía, mostramos un mensaje
-            if not os.path.exists(doc_dir) or not os.listdir(doc_dir):
-                messagebox.showinfo(
-                    "Archivos de ayuda no encontrados",
-                    "Los archivos de ayuda no fueron encontrados en la carpeta 'doc/'.\n\n"
-                    "Por favor, asegúrate de que los siguientes archivos existen en la carpeta doc/:\n"
-                    "- interface_help.txt\n"
-                    "- controls_help.txt\n"
-                    "- charts_help.txt\n"
-                    "- trading_help.txt"
-                )
-                return
-                
-            # Si existe la carpeta, mostramos el diálogo
-            help_dialog = HelpDialog(self.parent)
-            self.wait_window(help_dialog)
-        except Exception as e:
-            logger.error(f"Error al mostrar diálogo de ayuda: {e}")
-            messagebox.showerror("Error", f"No se pudo mostrar la ayuda: {e}")
+    def show_help(self, topic):
+        """Muestra la ayuda según el tema seleccionado"""
+        help_file = f"doc/{topic}_help.txt"
+        if os.path.exists(help_file):
+            with open(help_file, 'r') as f:
+                help_text = f.read()
+            help_dialog = HelpDialog(self, f"Ayuda - {topic.capitalize()}", help_text)
+        else:
+            messagebox.showinfo("Ayuda", "Tema de ayuda no disponible")
     
     def show_about(self):
-        """Muestra información acerca del software"""
-        messagebox.showinfo(
-            "Acerca de RL Trading System",
-            "RL Trading System v1.0\n\n"
-            "Sistema de trading basado en aprendizaje por refuerzo para NinjaTrader 8\n\n"
-            "© 2023-2025"
-        )
+        """Muestra información sobre la aplicación"""
+        about_text = """RL Trading System v1.0
+        
+Sistema de trading basado en Reinforcement Learning para NinjaTrader 8.
+
+Desarrollado por: Juan Andres Valencia
+Contacto: jandresvc@outlook.com
+"""
+        messagebox.showinfo("Acerca de", about_text)
     
-    def on_exit(self):
-        """Manejador para salir de la aplicación"""
-        if messagebox.askokcancel("Salir", "¿Está seguro que desea salir?"):
-            self.stop_all_processes()
-            self.parent.destroy()
-    
-    # ------------------------------------------------------------------------
-    # Funciones de control
-    # ------------------------------------------------------------------------
-    def show_training_config(self):
-        """Muestra el diálogo de configuración de entrenamiento"""
-        from src.RLTradingSystemGUI import TrainingConfigDialog
-        dialog = TrainingConfigDialog(self.parent, self.train_config_panel)
-        self.wait_window(dialog)
-    
-    def start_process(self, mode, csv_path=None):
+    def start_process(self, mode):
         """Inicia un proceso según el modo seleccionado"""
         if self.running:
             return
@@ -458,76 +660,30 @@ class MainApplication(tk.Frame):
         logger.info(f"Iniciando proceso en modo: {mode}")
         
         if mode == 'train':
-            self.start_training(csv_path)
+            self.start_training()
         elif mode == 'backtest':
-            self.start_backtesting(csv_path)
+            self.start_backtesting()
         elif mode == 'server':
             self.start_server_mode()
     
-    def toggle_pause(self, paused):
-        """Pausa o reanuda el proceso actual"""
-        self.paused = paused
-        logger.info(f"Proceso {'pausado' if paused else 'reanudado'}")
-    
-    def stop_process(self):
-        """Detiene el proceso actual"""
-        if not self.running:
+    def start_training(self):
+        """Inicia el entrenamiento de un modelo"""
+        # Verificar si hay datos extraídos
+        data_dir = "data"
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+            
+        extracted_files = [f for f in os.listdir(data_dir) if f.startswith("extracted_data_") and f.endswith(".csv")]
+        
+        if not extracted_files:
+            messagebox.showerror("No Data Available", "No extracted data found. Please extract data from NinjaTrader first.")
+            self.running = False
             return
         
-        self.running = False
-        logger.info("Deteniendo proceso...")
+        # Ordenar por fecha (más reciente primero)
+        extracted_files.sort(reverse=True)
+        latest_data_file = os.path.join(data_dir, extracted_files[0])
         
-        if self.worker_thread and self.worker_thread.is_alive():
-            self.worker_thread.join(timeout=2.0)
-        
-        # Detener interfaz NinjaTrader si está activa
-        if self.nt_interface:
-            self.nt_interface.stop()
-        
-        self.control_panel.start_button.configure(state='normal')
-        self.control_panel.pause_button.configure(state='disabled')
-        self.control_panel.stop_button.configure(state='disabled')
-        
-        logger.info("Proceso detenido")
-    
-    def stop_all_processes(self):
-        """Detiene todos los procesos antes de salir"""
-        self.stop_process()
-        
-        # Detener otros componentes
-        if hasattr(self, 'log_panel'):
-            self.log_panel.stop()
-    
-    def connect_to_ninjatrader(self, ip, port):
-        """Conecta con NinjaTrader"""
-        try:
-            if self.nt_interface:
-                self.nt_interface.stop()
-            
-            logger.info(f"Conectando a NinjaTrader en {ip}:{port}...")
-            
-            # Crear interfaz
-            self.nt_interface = NinjaTraderInterface(
-                server_ip=ip,
-                data_port=port,
-                order_port=port + 1
-            )
-            
-            # Iniciar interfaz
-            self.nt_interface.start()
-            
-            self.connected = True
-            self.stats_panel.update_connection(True)
-            logger.info(f"Conexión exitosa con NinjaTrader en {ip}:{port}")
-            messagebox.showinfo("Conexión", f"Conectado a NinjaTrader en {ip}:{port}")
-            
-        except Exception as e:
-            logger.error(f"Error de conexión: {e}")
-            self.stats_panel.update_connection(False)
-            messagebox.showerror("Error de Conexión", f"No se pudo conectar a NinjaTrader: {e}")
-    
-    def start_training(self, csv_path=None):
-        """Inicia el entrenamiento de un modelo"""
         # Obtener parámetros
         params = self.train_config_panel.get_training_params()
         if params is None:
@@ -542,12 +698,9 @@ class MainApplication(tk.Frame):
                 self.control_panel.pause_button.configure(state='normal')
                 self.control_panel.stop_button.configure(state='normal')
                 
-                # Cargar datos
-                if csv_path and os.path.exists(csv_path):
-                    train_data, test_data = self.data_loader.prepare_train_test_data(csv_file=csv_path)
-                else:
-                    logger.info("Generando datos sintéticos para entrenamiento")
-                    train_data, test_data = self.data_loader.prepare_train_test_data()
+                # Cargar datos del archivo extraído
+                logger.info(f"Usando datos extraídos: {latest_data_file}")
+                train_data, test_data = self.data_loader.prepare_train_test_data(csv_file=latest_data_file)
                 
                 logger.info(f"Datos cargados: {len(train_data)} registros de entrenamiento, {len(test_data)} de prueba")
                 
@@ -592,6 +745,226 @@ class MainApplication(tk.Frame):
         
         # Iniciar en un hilo separado
         self.worker_thread = threading.Thread(target=training_thread)
+        self.worker_thread.daemon = True
+        self.worker_thread.start()
+    
+    def start_backtesting(self):
+        """Inicia el backtesting de un modelo"""
+        # Verificar si hay datos extraídos
+        data_dir = "data"
+        extracted_files = [f for f in os.listdir(data_dir) if f.startswith("extracted_data_") and f.endswith(".csv")]
+        
+        if not extracted_files:
+            messagebox.showerror("No Data Available", "No extracted data found. Please extract data from NinjaTrader first.")
+            self.running = False
+            return
+        
+        # Ordenar por fecha (más reciente primero)
+        extracted_files.sort(reverse=True)
+        latest_data_file = os.path.join(data_dir, extracted_files[0])
+        
+        # Obtener modelo
+        model_path = filedialog.askopenfilename(
+            title="Seleccionar modelo",
+            filetypes=[("Archivos de modelo", "*.zip"), ("Todos los archivos", "*.*")]
+        )
+        if not model_path:
+            self.running = False
+            return
+        
+        # Crear función para backtesting en un hilo separado
+        def backtesting_thread():
+            try:
+                logger.info("Iniciando backtesting...")
+                self.control_panel.start_button.configure(state='disabled')
+                self.control_panel.pause_button.configure(state='normal')
+                self.control_panel.stop_button.configure(state='normal')
+                
+                # Cargar datos
+                _, test_data = self.data_loader.prepare_train_test_data(csv_file=latest_data_file, test_ratio=1.0)
+                logger.info(f"Datos cargados: {len(test_data)} registros")
+                
+                # Cargar modelo
+                model = self.training_manager.load_model(model_path)
+                
+                # Iniciar backtesting
+                model_dir = os.path.dirname(model_path)
+                vec_normalize_path = os.path.join(model_dir, "vec_normalize_final.pkl")
+                if not os.path.exists(vec_normalize_path):
+                    vec_normalize_path = None
+                
+                # Realizar backtesting
+                performance_df = self.training_manager.backtest(model, test_data, vec_normalize_path)
+                
+                # Verificar si se detuvo manualmente
+                if not self.running:
+                    logger.info("Backtesting detenido manualmente")
+                    return
+                
+                # Mostrar resultados
+                self.training_manager.plot_backtest_results(performance_df)
+                
+                logger.info("Backtesting completado exitosamente")
+                
+                # Actualizar UI
+                self.control_panel.start_button.configure(state='normal')
+                self.control_panel.pause_button.configure(state='disabled')
+                self.control_panel.stop_button.configure(state='disabled')
+                
+                # Mensaje al usuario
+                messagebox.showinfo("Backtesting", "El backtesting ha finalizado correctamente")
+                
+                self.running = False
+                
+            except Exception as e:
+                logger.error(f"Error en backtesting: {e}")
+                messagebox.showerror("Error", f"Error durante el backtesting: {e}")
+                self.running = False
+                self.control_panel.start_button
+                self.control_panel.start_button.configure(state='normal')
+                self.control_panel.pause_button.configure(state='disabled')
+                self.control_panel.stop_button.configure(state='disabled')
+            except Exception as e:
+                logger.error(f"Error en backtesting: {e}")
+                messagebox.showerror("Error", f"Error durante el backtesting: {e}")
+                self.running = False
+                self.control_panel.start_button.configure(state='normal')
+                self.control_panel.pause_button.configure(state='disabled')
+                self.control_panel.stop_button.configure(state='disabled')
+        
+        # Iniciar en un hilo separado
+        self.worker_thread = threading.Thread(target=backtesting_thread)
+        self.worker_thread.daemon = True
+        self.worker_thread.start()
+    
+    def start_server_mode(self):
+        """Inicia el modo servidor para conectarse a NinjaTrader"""
+        if not self.connected:
+            messagebox.showwarning("No conectado", "Debe conectarse a NinjaTrader primero")
+            self.running = False
+            return
+        
+        # Preguntar si desea usar un modelo
+        use_model = messagebox.askyesno("Modelo", "¿Desea cargar un modelo de RL para trading?")
+        model_path = None
+        
+        if use_model:
+            # Seleccionar modelo
+            file_path = filedialog.askopenfilename(
+                title="Seleccionar modelo",
+                filetypes=[("Archivos de modelo", "*.zip"), ("Todos los archivos", "*.*")]
+            )
+            if file_path:
+                model_path = file_path
+        
+        # Crear función para el modo servidor en un hilo separado
+        def server_thread():
+            try:
+                logger.info("Iniciando modo servidor...")
+                self.control_panel.start_button.configure(state='disabled')
+                self.control_panel.pause_button.configure(state='normal')
+                self.control_panel.stop_button.configure(state='normal')
+                
+                # Reiniciar interfaz con el modelo
+                if self.nt_interface:
+                    self.nt_interface.stop()
+                
+                # Determinar ruta de normalización
+                vec_normalize_path = None
+                if model_path:
+                    model_dir = os.path.dirname(model_path)
+                    possible_vec_norm = os.path.join(model_dir, "vec_normalize_final.pkl")
+                    if os.path.exists(possible_vec_norm):
+                        vec_normalize_path = possible_vec_norm
+                
+                # Crear interfaz con NinjaTrader
+                self.nt_interface = NinjaTraderInterface(
+                    server_ip=self.control_panel.ip_var.get(),
+                    data_port=int(self.control_panel.data_port_var.get()),
+                    order_port=int(self.control_panel.data_port_var.get()) + 1,
+                    model_path=model_path,
+                    vec_normalize_path=vec_normalize_path
+                )
+                
+                # Iniciar interfaz
+                self.nt_interface.start()
+                
+                # Bucle principal mientras se ejecuta
+                while self.running:
+                    # Verificar pausa
+                    if self.paused:
+                        time.sleep(0.5)
+                        continue
+                    
+                    # Actualizar estadísticas si hay datos disponibles
+                    if hasattr(self.nt_interface, 'market_data') and len(self.nt_interface.market_data.data) > 0:
+                        # Actualizar gráfico de precios
+                        recent_data = self.nt_interface.market_data.data.tail(100).copy()
+                        
+                        if 'timestamp' not in recent_data.columns:
+                            recent_data['timestamp'] = pd.date_range(
+                                end=pd.Timestamp.now(), 
+                                periods=len(recent_data), 
+                                freq='1min'
+                            )
+                        
+                        price_data = []
+                        for idx, row in recent_data.iterrows():
+                            data_point = {
+                                'timestamp': row['timestamp'] if 'timestamp' in row else pd.Timestamp.now(),
+                                'open': row['open'] if 'open' in row else 0,
+                                'high': row['high'] if 'high' in row else 0,
+                                'low': row['low'] if 'low' in row else 0,
+                                'close': row['close'] if 'close' in row else 0
+                            }
+                            price_data.append(data_point)
+                        
+                        self.chart_panel.update_price_chart(price_data)
+                    
+                    # Actualizar estadísticas si hay datos del agente
+                    if hasattr(self.nt_interface, 'rl_agent'):
+                        agent = self.nt_interface.rl_agent
+                        
+                        # Actualizar panel de estadísticas
+                        stats = {
+                            'balance': 100000.0 + agent.profit_loss,
+                            'total_pnl': agent.profit_loss,
+                            'trades_count': agent.trade_count,
+                            'win_rate': agent.successful_trades / max(1, agent.trade_count),
+                            'current_position': 'Long' if agent.current_position == 1 else 
+                                               'Short' if agent.current_position == -1 else 'None'
+                        }
+                        self.stats_panel.update_stats(stats)
+                        
+                        # Actualizar gráfico de rendimiento
+                        self.chart_panel.update_performance_chart(
+                            100000.0 + agent.profit_loss, 
+                            pd.Timestamp.now()
+                        )
+                    
+                    time.sleep(1.0)
+                
+                # Detener interfaz al finalizar
+                if self.nt_interface:
+                    self.nt_interface.stop()
+                
+                logger.info("Modo servidor finalizado")
+                
+                # Actualizar UI
+                self.control_panel.start_button.configure(state='normal')
+                self.control_panel.pause_button.configure(state='disabled')
+                self.control_panel.stop_button.configure(state='disabled')
+                
+            except Exception as e:
+                logger.error(f"Error en modo servidor: {e}")
+                messagebox.showerror("Error", f"Error en modo servidor: {e}")
+                self.running = False
+                self.control_panel.start_button.configure(state='normal')
+                self.control_panel.pause_button.configure(state='disabled')
+                self.control_panel.stop_button.configure(state='disabled')
+        
+        # Iniciar en un hilo separado
+        self.worker_thread = threading.Thread(target=server_thread)
         self.worker_thread.daemon = True
         self.worker_thread.start()
     

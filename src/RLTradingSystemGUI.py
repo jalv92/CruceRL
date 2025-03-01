@@ -264,6 +264,18 @@ class TradesPanel(BasePanel):
         # Ajustar ancho del frame interno
         self.canvas.itemconfig(self.canvas_window, width=event.width)
 
+    def update_trades(self, trades_list):
+        """Actualiza la lista completa de operaciones"""
+        # Limpiar filas existentes
+        for row in self.rows:
+            row.destroy()
+        self.rows = []
+        self.trades = []
+        
+        # Añadir nuevas operaciones
+        for trade in trades_list:
+            self.add_trade(trade)
+    
     def add_trade(self, trade):
         time_str = trade.get('timestamp', '')
         if isinstance(time_str, pd.Timestamp):
@@ -769,6 +781,10 @@ class TrainingConfigPanel(BasePanel):
         profit_entry = tk.Entry(self.env_frame, textvariable=self.take_profit_var, width=10, **entry_style)
         profit_entry.grid(row=4, column=3, sticky='w', padx=10, pady=5)
     
+    def show(self):
+        """Muestra el panel de configuración en una ventana separada"""
+        self.dialog = TrainingConfigDialog(self.winfo_toplevel(), self)
+    
     def get_training_params(self):
         """Obtener los parámetros de entrenamiento como dict"""
         try:
@@ -862,13 +878,14 @@ class LogPanel(BasePanel):
 # Panel de control
 # ---------------------------------------------------------------------
 class ControlPanel(BasePanel):
-    def __init__(self, parent, on_start, on_pause, on_stop, on_connect, on_train_config):
+    def __init__(self, parent, on_start, on_pause, on_stop, on_connect, on_train_config, on_extract_data):
         super().__init__(parent, title="Control Panel")
         self.on_start = on_start
         self.on_pause = on_pause
         self.on_stop = on_stop
         self.on_connect = on_connect
         self.on_train_config = on_train_config
+        self.on_extract_data = on_extract_data
         self.paused = False
         self.progress_value = 0
         self.setup_ui()
@@ -923,6 +940,18 @@ class ControlPanel(BasePanel):
         )
         self.connect_button.pack(side=tk.LEFT, padx=(0,0), pady=5)
 
+        # Nuevo botón para extraer datos
+        self.extract_data_button = tk.Button(
+            server_frame, text="Extract Data",
+            command=self._on_extract_data_click,
+            bg=COLORS['bg_medium'], fg=COLORS['fg_white'],
+            activebackground=COLORS['bg_light'],
+            activeforeground=COLORS['fg_white'],
+            font=('Segoe UI', 10),
+            relief=tk.FLAT, bd=0, padx=10
+        )
+        self.extract_data_button.pack(side=tk.LEFT, padx=(10,0), pady=5)
+
         # Frame para el modo de operación
         mode_frame = tk.Frame(container, bg=COLORS['bg_dark'])
         mode_frame.pack(fill=tk.X, pady=5)
@@ -957,21 +986,6 @@ class ControlPanel(BasePanel):
             relief=tk.FLAT, bd=0, padx=10
         )
         self.train_config_button.pack(side=tk.LEFT, padx=(10,0), pady=5)
-        
-        # Botón para seleccionar archivo CSV
-        self.csv_button = tk.Button(
-            mode_frame, text="Select CSV",
-            command=self._on_select_csv,
-            bg=COLORS['bg_medium'], fg=COLORS['fg_white'],
-            activebackground=COLORS['bg_light'],
-            activeforeground=COLORS['fg_white'],
-            font=('Segoe UI', 10),
-            relief=tk.FLAT, bd=0, padx=10
-        )
-        self.csv_button.pack(side=tk.LEFT, padx=(10,0), pady=5)
-        
-        # Variable para almacenar la ruta del CSV
-        self.csv_path = None
 
         # Barra de progreso
         progress_frame = tk.Frame(container, bg=COLORS['bg_dark'])
@@ -1070,25 +1084,15 @@ class ControlPanel(BasePanel):
         self._update_button_visibility()
 
     def _on_connect_click(self):
-        ip = self.ip_var.get()
-        try:
-            data_port = int(self.data_port_var.get())
-        except ValueError:
-            messagebox.showerror("Invalid Port", "Data port must be a valid number.")
-            return
-        self.on_connect(ip, data_port)
+        # Just call the on_connect method without parameters
+        # The connect_to_ninjatrader method will get IP and port values from the UI
+        self.on_connect()
     
     def _on_train_config_click(self):
         self.on_train_config()
     
-    def _on_select_csv(self):
-        file_path = filedialog.askopenfilename(
-            title="Select CSV Data File",
-            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
-        )
-        if file_path:
-            self.csv_path = file_path
-            logger.info(f"Selected CSV file: {os.path.basename(file_path)}")
+    def _on_extract_data_click(self):
+        self.on_extract_data()
     
     def _on_mode_change(self, event=None):
         self._update_button_visibility()
@@ -1099,14 +1103,15 @@ class ControlPanel(BasePanel):
         # Mostrar/ocultar botones según el modo
         if mode == "train" or mode == "backtest":
             self.train_config_button.config(state="normal")
-            self.csv_button.config(state="normal")
+            self.extract_data_button.config(state="normal")
         else:
             self.train_config_button.config(state="disabled")
-            self.csv_button.config(state="disabled")
+            # Dejar el botón de extraer datos siempre disponible
+            self.extract_data_button.config(state="normal")
 
     def on_start_click(self):
         mode = self.mode_var.get()
-        self.on_start(mode, self.csv_path)
+        self.on_start(mode)
         self.start_button.configure(state='disabled')
         self.pause_button.configure(state='normal')
         self.stop_button.configure(state='normal')
@@ -1163,9 +1168,9 @@ class ControlPanel(BasePanel):
 # Diálogo de ayuda
 # ---------------------------------------------------------------------
 class HelpDialog(tk.Toplevel):
-    def __init__(self, parent):
+    def __init__(self, parent, title="RL Trading System - Help", help_text=None):
         super().__init__(parent)
-        self.title("RL Trading System - Help")
+        self.title(title)
         self.geometry("800x600")
         self.minsize(600, 500)
         self.configure(background=COLORS['bg_very_dark'])
@@ -1173,6 +1178,7 @@ class HelpDialog(tk.Toplevel):
         self.grab_set()
         if os.path.exists("icon.ico"):
             self.iconbitmap("icon.ico")
+        self.help_text = help_text
         self.setup_ui()
 
         # Centrar
@@ -1231,10 +1237,6 @@ class HelpDialog(tk.Toplevel):
         )
         title_label.pack(side=tk.TOP, anchor='w', pady=10)
         
-        # Crear notebook para pestañas de ayuda
-        help_notebook = ttk.Notebook(main_frame)
-        help_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
         # Estilos para el texto de ayuda
         text_config = {
             'bg': COLORS['bg_dark'],
@@ -1247,41 +1249,55 @@ class HelpDialog(tk.Toplevel):
             'pady': 10
         }
         
-        # Pestaña 1: Interfaz General
-        interface_frame = tk.Frame(help_notebook, bg=COLORS['bg_dark'])
-        interface_text = scrolledtext.ScrolledText(interface_frame, **text_config)
-        interface_text.pack(fill=tk.BOTH, expand=True)
-        interface_content = self.load_help_file("interface_help.txt")
-        interface_text.insert(tk.END, interface_content)
-        interface_text.configure(state='disabled')
-        help_notebook.add(interface_frame, text="Interface")
-        
-        # Pestaña 2: Controles
-        controls_frame = tk.Frame(help_notebook, bg=COLORS['bg_dark'])
-        controls_text = scrolledtext.ScrolledText(controls_frame, **text_config)
-        controls_text.pack(fill=tk.BOTH, expand=True)
-        controls_content = self.load_help_file("controls_help.txt")
-        controls_text.insert(tk.END, controls_content)
-        controls_text.configure(state='disabled')
-        help_notebook.add(controls_frame, text="Controls")
-        
-        # Pestaña 3: Gráficos
-        charts_frame = tk.Frame(help_notebook, bg=COLORS['bg_dark'])
-        charts_text = scrolledtext.ScrolledText(charts_frame, **text_config)
-        charts_text.pack(fill=tk.BOTH, expand=True)
-        charts_content = self.load_help_file("charts_help.txt")
-        charts_text.insert(tk.END, charts_content)
-        charts_text.configure(state='disabled')
-        help_notebook.add(charts_frame, text="Charts")
-        
-        # Pestaña 4: Trading
-        trading_frame = tk.Frame(help_notebook, bg=COLORS['bg_dark'])
-        trading_text = scrolledtext.ScrolledText(trading_frame, **text_config)
-        trading_text.pack(fill=tk.BOTH, expand=True)
-        trading_content = self.load_help_file("trading_help.txt")
-        trading_text.insert(tk.END, trading_content)
-        trading_text.configure(state='disabled')
-        help_notebook.add(trading_frame, text="Trading")
+        # Si se proporcionó un texto de ayuda específico, usarlo
+        if self.help_text:
+            help_frame = tk.Frame(main_frame, bg=COLORS['bg_dark'])
+            help_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            
+            help_text_widget = scrolledtext.ScrolledText(help_frame, **text_config)
+            help_text_widget.pack(fill=tk.BOTH, expand=True)
+            help_text_widget.insert(tk.END, self.help_text)
+            help_text_widget.configure(state='disabled')
+        else:
+            # Crear notebook para pestañas de ayuda
+            help_notebook = ttk.Notebook(main_frame)
+            help_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            
+            # Pestaña 1: Interfaz General
+            interface_frame = tk.Frame(help_notebook, bg=COLORS['bg_dark'])
+            interface_text = scrolledtext.ScrolledText(interface_frame, **text_config)
+            interface_text.pack(fill=tk.BOTH, expand=True)
+            interface_content = self.load_help_file("interface_help.txt")
+            interface_text.insert(tk.END, interface_content)
+            interface_text.configure(state='disabled')
+            help_notebook.add(interface_frame, text="Interface")
+            
+            # Pestaña 2: Controles
+            controls_frame = tk.Frame(help_notebook, bg=COLORS['bg_dark'])
+            controls_text = scrolledtext.ScrolledText(controls_frame, **text_config)
+            controls_text.pack(fill=tk.BOTH, expand=True)
+            controls_content = self.load_help_file("controls_help.txt")
+            controls_text.insert(tk.END, controls_content)
+            controls_text.configure(state='disabled')
+            help_notebook.add(controls_frame, text="Controls")
+            
+            # Pestaña 3: Gráficos
+            charts_frame = tk.Frame(help_notebook, bg=COLORS['bg_dark'])
+            charts_text = scrolledtext.ScrolledText(charts_frame, **text_config)
+            charts_text.pack(fill=tk.BOTH, expand=True)
+            charts_content = self.load_help_file("charts_help.txt")
+            charts_text.insert(tk.END, charts_content)
+            charts_text.configure(state='disabled')
+            help_notebook.add(charts_frame, text="Charts")
+            
+            # Pestaña 4: Trading
+            trading_frame = tk.Frame(help_notebook, bg=COLORS['bg_dark'])
+            trading_text = scrolledtext.ScrolledText(trading_frame, **text_config)
+            trading_text.pack(fill=tk.BOTH, expand=True)
+            trading_content = self.load_help_file("trading_help.txt")
+            trading_text.insert(tk.END, trading_content)
+            trading_text.configure(state='disabled')
+            help_notebook.add(trading_frame, text="Trading")
 
         close_button = tk.Button(
             main_frame,

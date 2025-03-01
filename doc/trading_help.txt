@@ -2,7 +2,12 @@ Trading with the RL System
 
 Reinforcement Learning Basics:
 - El sistema utiliza aprendizaje por refuerzo para optimizar las decisiones de trading.
-- Aprende mediante simulaciones de operaciones.
+- Aprende mediante los datos históricos extraídos directamente de NinjaTrader.
+
+Extracción de Datos:
+- Utilice el botón "Extract Data" para extraer datos históricos del chart actual en NinjaTrader.
+- Los datos extraídos se utilizan para el entrenamiento del modelo.
+- Asegúrese de tener suficientes datos históricos en el chart (recomendado 100 días o más).
 
 Trading Statistics:
 - Muestra métricas clave como balance, P&L total, número de operaciones y win rate.

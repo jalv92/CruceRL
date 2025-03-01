@@ -728,9 +728,20 @@ class MainApplication(tk.Frame):
                 
                 logger.info(f"Datos cargados: {len(train_data)} registros de entrenamiento, {len(test_data)} de prueba")
                 
-                # Iniciar entrenamiento
+                # Definir función de callback para actualizar la interfaz
+                def update_training_ui(metrics):
+                    # Actualizar interfaz en el hilo principal
+                    self.parent.after(0, lambda: self.chart_panel.update_training_metrics(metrics))
+                    
+                    # Actualizar también la barra de progreso si hay total_timesteps disponible
+                    if 'episode' in metrics and params.get('total_timesteps'):
+                        progress = min(100, (metrics['episode'] * 100) / (params.get('total_timesteps') / 5000))
+                        self.parent.after(0, lambda: self.control_panel.update_progress(progress))
+                
+                # Iniciar entrenamiento con el callback
                 model, train_env = self.training_manager.train(
                     train_data, test_data,
+                    training_callback=update_training_ui,
                     **params
                 )
                 

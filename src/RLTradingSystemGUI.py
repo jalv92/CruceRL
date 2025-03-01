@@ -543,57 +543,60 @@ class ChartPanel(BasePanel):
         self.training_data['mean_rewards'].append(training_metrics.get('mean_reward', 0))
         self.training_data['win_rates'].append(training_metrics.get('win_rate', 0) * 100)  # Convertir a porcentaje
         
-        # Generar eje x basado en el número de episodio
-        episode = training_metrics.get('episode', len(self.training_data['episode_rewards']))
-        episodes = list(range(1, episode + 1))
+        # Obtener el número de episodio actual
+        current_episode = training_metrics.get('episode', len(self.training_data['episode_rewards']))
         
-        # Actualizar gráficos
-        # Recompensas de episodio
-        self.rewards_ax.clear()
-        self.rewards_ax.plot(episodes, self.training_data['episode_rewards'], 
-                            color=COLORS['accent'], linewidth=1.5)
-        self.rewards_ax.set_facecolor(COLORS['bg_dark'])
-        self.rewards_ax.tick_params(colors=COLORS['fg_light'])
-        self.rewards_ax.set_title('Episode Rewards', color=COLORS['fg_white'])
-        self.rewards_ax.grid(True, linestyle='--', alpha=0.2, color=COLORS['border'])
-        for spine in self.rewards_ax.spines.values():
-            spine.set_color(COLORS['border'])
+        # Generar eje x basado en el número de episodios acumulados
+        episodes = list(range(1, len(self.training_data['episode_rewards']) + 1))
         
-        # Longitud de episodio
-        self.lengths_ax.clear()
-        self.lengths_ax.plot(episodes, self.training_data['episode_lengths'], 
-                           color=COLORS['yellow'], linewidth=1.5)
-        self.lengths_ax.set_facecolor(COLORS['bg_dark'])
-        self.lengths_ax.tick_params(colors=COLORS['fg_light'])
-        self.lengths_ax.set_title('Episode Length', color=COLORS['fg_white'])
-        self.lengths_ax.grid(True, linestyle='--', alpha=0.2, color=COLORS['border'])
-        for spine in self.lengths_ax.spines.values():
-            spine.set_color(COLORS['border'])
-        
-        # Recompensas promedio
-        self.mean_rewards_ax.clear()
-        self.mean_rewards_ax.plot(episodes, self.training_data['mean_rewards'], 
-                                color=COLORS['green'], linewidth=1.5)
-        self.mean_rewards_ax.set_facecolor(COLORS['bg_dark'])
-        self.mean_rewards_ax.tick_params(colors=COLORS['fg_light'])
-        self.mean_rewards_ax.set_title('Mean Reward', color=COLORS['fg_white'])
-        self.mean_rewards_ax.set_xlabel('Episode', color=COLORS['fg_light'])
-        self.mean_rewards_ax.grid(True, linestyle='--', alpha=0.2, color=COLORS['border'])
-        for spine in self.mean_rewards_ax.spines.values():
-            spine.set_color(COLORS['border'])
-        
-        # Tasa de victorias
-        self.win_rate_ax.clear()
-        self.win_rate_ax.plot(episodes, self.training_data['win_rates'], 
-                            color=COLORS['red'], linewidth=1.5)
-        self.win_rate_ax.set_facecolor(COLORS['bg_dark'])
-        self.win_rate_ax.tick_params(colors=COLORS['fg_light'])
-        self.win_rate_ax.set_title('Win Rate', color=COLORS['fg_white'])
-        self.win_rate_ax.set_xlabel('Episode', color=COLORS['fg_light'])
-        self.win_rate_ax.set_ylabel('Win Rate %', color=COLORS['fg_light'])
-        self.win_rate_ax.grid(True, linestyle='--', alpha=0.2, color=COLORS['border'])
-        for spine in self.win_rate_ax.spines.values():
-            spine.set_color(COLORS['border'])
+        # Actualizar gráficos solo si tenemos datos
+        if len(episodes) > 0:
+            # Recompensas de episodio
+            self.rewards_ax.clear()
+            self.rewards_ax.plot(episodes, self.training_data['episode_rewards'], 
+                                color=COLORS['accent'], linewidth=1.5)
+            self.rewards_ax.set_facecolor(COLORS['bg_dark'])
+            self.rewards_ax.tick_params(colors=COLORS['fg_light'])
+            self.rewards_ax.set_title('Episode Rewards', color=COLORS['fg_white'])
+            self.rewards_ax.grid(True, linestyle='--', alpha=0.2, color=COLORS['border'])
+            for spine in self.rewards_ax.spines.values():
+                spine.set_color(COLORS['border'])
+            
+            # Longitud de episodio
+            self.lengths_ax.clear()
+            self.lengths_ax.plot(episodes, self.training_data['episode_lengths'], 
+                            color=COLORS['yellow'], linewidth=1.5)
+            self.lengths_ax.set_facecolor(COLORS['bg_dark'])
+            self.lengths_ax.tick_params(colors=COLORS['fg_light'])
+            self.lengths_ax.set_title('Episode Length', color=COLORS['fg_white'])
+            self.lengths_ax.grid(True, linestyle='--', alpha=0.2, color=COLORS['border'])
+            for spine in self.lengths_ax.spines.values():
+                spine.set_color(COLORS['border'])
+            
+            # Recompensas promedio
+            self.mean_rewards_ax.clear()
+            self.mean_rewards_ax.plot(episodes, self.training_data['mean_rewards'], 
+                                    color=COLORS['green'], linewidth=1.5)
+            self.mean_rewards_ax.set_facecolor(COLORS['bg_dark'])
+            self.mean_rewards_ax.tick_params(colors=COLORS['fg_light'])
+            self.mean_rewards_ax.set_title('Mean Reward', color=COLORS['fg_white'])
+            self.mean_rewards_ax.set_xlabel('Episode', color=COLORS['fg_light'])
+            self.mean_rewards_ax.grid(True, linestyle='--', alpha=0.2, color=COLORS['border'])
+            for spine in self.mean_rewards_ax.spines.values():
+                spine.set_color(COLORS['border'])
+            
+            # Tasa de victorias
+            self.win_rate_ax.clear()
+            self.win_rate_ax.plot(episodes, self.training_data['win_rates'], 
+                                color=COLORS['red'], linewidth=1.5)
+            self.win_rate_ax.set_facecolor(COLORS['bg_dark'])
+            self.win_rate_ax.tick_params(colors=COLORS['fg_light'])
+            self.win_rate_ax.set_title('Win Rate', color=COLORS['fg_white'])
+            self.win_rate_ax.set_xlabel('Episode', color=COLORS['fg_light'])
+            self.win_rate_ax.set_ylabel('Win Rate %', color=COLORS['fg_light'])
+            self.win_rate_ax.grid(True, linestyle='--', alpha=0.2, color=COLORS['border'])
+            for spine in self.win_rate_ax.spines.values():
+                spine.set_color(COLORS['border'])
         
         # Actualizar canvas
         self.training_figure.tight_layout(pad=2)

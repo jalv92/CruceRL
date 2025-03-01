@@ -30,15 +30,37 @@ logger = logging.getLogger("RLTraining")
 
 
 class TradingTrainingCallback(BaseCallback):
-    """Custom callback for monitoring training progress"""
+    """Custom callback for monitoring training progress and adapting hyperparameters"""
     
-    def __init__(self, check_freq=1000, save_path=None, verbose=1, training_callback=None):
+    def __init__(self, check_freq=1000, save_path=None, verbose=1, training_callback=None, 
+                 enable_auto_tuning=True, patience=5, min_reward_improvement=0.05):
         super(TradingTrainingCallback, self).__init__(verbose)
         self.check_freq = check_freq
         self.save_path = save_path
         self.best_reward = -np.inf
         self.training_callback = training_callback
         self.episode_count = 0
+        
+        # Auto-tuning parameters
+        self.enable_auto_tuning = enable_auto_tuning
+        self.patience = patience  # How many checks to wait before tuning
+        self.min_reward_improvement = min_reward_improvement  # Minimum improvement to reset patience
+        self.stagnation_counter = 0
+        self.last_mean_reward = -np.inf
+        self.tuning_attempts = 0
+        self.max_tuning_attempts = 5
+        
+        # Hyperparameter ranges
+        self.lr_range = (0.00001, 0.001)
+        self.batch_size_range = (32, 256)
+        self.ent_coef_range = (0.0, 0.1)
+        
+        # Progress tracking
+        self.mean_rewards_history = []
+        self.timestamps = []
+        self.start_time = time.time()
+        
+        logger.info("Auto-tuning of hyperparameters is enabled" if enable_auto_tuning else "Auto-tuning of hyperparameters is disabled")
     
     def _on_step(self) -> bool:
         if self.n_calls % self.check_freq == 0:
@@ -46,13 +68,22 @@ class TradingTrainingCallback(BaseCallback):
             mean_reward = np.mean([ep_info["r"] for ep_info in self.model.ep_info_buffer]) if len(self.model.ep_info_buffer) > 0 else 0
             mean_length = np.mean([ep_info["l"] for ep_info in self.model.ep_info_buffer]) if len(self.model.ep_info_buffer) > 0 else 0
             
+            # Record progress for analysis
+            self.mean_rewards_history.append(mean_reward)
+            self.timestamps.append(time.time() - self.start_time)
+            
             logger.info(f"Training step: {self.n_calls}")
             logger.info(f"Mean reward: {mean_reward:.2f}, Mean episode length: {mean_length:.2f}")
+            
+            # Auto-tune hyperparameters if enabled and needed
+            if self.enable_auto_tuning:
+                self._check_and_tune_hyperparameters(mean_reward)
             
             # Save best model
             if self.save_path is not None and mean_reward > self.best_reward:
                 self.best_reward = mean_reward
-                self.model.save(os.path.join(self.save_path, f"best_model_step_{self.n_calls}"))
+                model_path = os.path.join(self.save_path, f"best_model_step_{self.n_calls}")
+                self.model.save(model_path)
                 logger.info(f"New best model saved with reward: {mean_reward:.2f}")
             
             # Call the training callback if provided
@@ -86,13 +117,108 @@ class TradingTrainingCallback(BaseCallback):
                     'episode_length': episode_length,
                     'mean_reward': mean_reward,
                     'win_rate': win_rate,
-                    'episode': self.episode_count
+                    'episode': self.episode_count,
+                    'hyperparams': self._get_current_hyperparams()
                 }
                 
                 # Call the callback with metrics
                 self.training_callback(metrics)
         
         return True
+        
+    def _check_and_tune_hyperparameters(self, current_mean_reward):
+        """Check if learning has stagnated and tune hyperparameters if needed"""
+        # Check if reward is improving
+        reward_improvement = current_mean_reward - self.last_mean_reward
+        
+        # Update last mean reward
+        self.last_mean_reward = current_mean_reward
+        
+        # Check for stagnation
+        if reward_improvement < self.min_reward_improvement:
+            self.stagnation_counter += 1
+            logger.info(f"Learning might be stagnating: {self.stagnation_counter}/{self.patience} checks with minimal improvement")
+        else:
+            # Reset counter if we see good improvement
+            self.stagnation_counter = 0
+            logger.info(f"Learning is progressing well, reward improved by {reward_improvement:.4f}")
+        
+        # Tune hyperparameters if stagnation exceeds patience threshold
+        if self.stagnation_counter >= self.patience:
+            if self.tuning_attempts < self.max_tuning_attempts:
+                logger.info(f"Detected learning stagnation, tuning hyperparameters (attempt {self.tuning_attempts + 1}/{self.max_tuning_attempts})")
+                self._tune_hyperparameters()
+                self.stagnation_counter = 0
+                self.tuning_attempts += 1
+            else:
+                logger.info(f"Reached maximum tuning attempts ({self.max_tuning_attempts}), continuing with current parameters")
+    
+    def _tune_hyperparameters(self):
+        """Adapt hyperparameters based on training progress"""
+        # Get current parameters
+        params = self._get_current_hyperparams()
+        
+        # Analyze reward history to determine adaptations
+        if len(self.mean_rewards_history) >= 3:
+            reward_trend = np.polyfit(range(len(self.mean_rewards_history[-3:])), 
+                                       self.mean_rewards_history[-3:], 1)[0]
+            
+            # Strategy 1: If rewards are consistently decreasing, reduce learning rate
+            if reward_trend < 0:
+                new_lr = max(params['learning_rate'] * 0.5, self.lr_range[0])
+                logger.info(f"Decreasing learning rate: {params['learning_rate']:.6f} -> {new_lr:.6f}")
+                self.model.learning_rate = new_lr
+            
+            # Strategy 2: If rewards are flat, try increasing batch size
+            elif abs(reward_trend) < 0.001:
+                # Increase batch size to stabilize learning (must be power of 2)
+                current_batch = params.get('batch_size', 64)
+                new_batch = min(current_batch * 2, self.batch_size_range[1])
+                
+                if hasattr(self.model, 'batch_size') and new_batch != current_batch:
+                    logger.info(f"Increasing batch size: {current_batch} -> {new_batch}")
+                    self.model.batch_size = new_batch
+                
+                # Add entropy to encourage exploration
+                if hasattr(self.model, 'ent_coef'):
+                    current_ent = params.get('ent_coef', 0.0)
+                    new_ent = min(current_ent + 0.01, self.ent_coef_range[1])
+                    if new_ent != current_ent:
+                        logger.info(f"Increasing entropy coefficient: {current_ent:.3f} -> {new_ent:.3f}")
+                        self.model.ent_coef = new_ent
+            
+            # Strategy 3: If rewards are slowly improving, subtle adjustments
+            else:
+                # Fine tuning - slight increase in learning rate if progress is slow but positive
+                new_lr = min(params['learning_rate'] * 1.2, self.lr_range[1])
+                logger.info(f"Fine-tuning learning rate: {params['learning_rate']:.6f} -> {new_lr:.6f}")
+                self.model.learning_rate = new_lr
+    
+    def _get_current_hyperparams(self):
+        """Extract current hyperparameters from the model"""
+        params = {}
+        
+        # Get common parameters
+        if hasattr(self.model, 'learning_rate'):
+            params['learning_rate'] = self.model.learning_rate
+        
+        # PPO specific parameters
+        if hasattr(self.model, 'batch_size'):
+            params['batch_size'] = self.model.batch_size
+        
+        if hasattr(self.model, 'n_steps'):
+            params['n_steps'] = self.model.n_steps
+        
+        if hasattr(self.model, 'ent_coef'):
+            params['ent_coef'] = self.model.ent_coef
+        
+        if hasattr(self.model, 'clip_range'):
+            if callable(self.model.clip_range):
+                params['clip_range'] = self.model.clip_range(1)  # Approximation
+            else:
+                params['clip_range'] = self.model.clip_range
+        
+        return params
     
 
 class DataLoader:
@@ -334,14 +460,15 @@ class TrainingManager:
         
         return model
     
-    def train(self, train_data, test_data=None, training_callback=None, **kwargs):
+    def train(self, train_data, test_data=None, training_callback=None, enable_auto_tuning=True, **kwargs):
         """
-        Train the RL model
+        Train the RL model with adaptive hyperparameter tuning
         
         Args:
             train_data: DataFrame with training data
             test_data: Optional DataFrame with testing data for evaluation
             training_callback: Optional callback function to report training progress
+            enable_auto_tuning: Whether to automatically tune hyperparameters during training
             **kwargs: Optional parameters to override defaults
             
         Returns:
@@ -415,12 +542,13 @@ class TrainingManager:
                 deterministic=True
             )
         
-        # Training callback for logging
+        # Training callback for logging and hyperparameter tuning
         training_callback_obj = TradingTrainingCallback(
             check_freq=5000,
             save_path=self.models_dir,
             verbose=1,
-            training_callback=training_callback  # Pass the callback function
+            training_callback=training_callback,  # Pass the callback function
+            enable_auto_tuning=enable_auto_tuning  # Enable/disable auto-tuning
         )
         
         # Create callback list

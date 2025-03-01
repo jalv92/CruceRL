@@ -739,6 +739,10 @@ class MainApplication(tk.Frame):
                 
                 logger.info(f"Datos cargados: {len(train_data)} registros de entrenamiento, {len(test_data)} de prueba")
                 
+                # Extraer auto-tuning explícitamente
+                enable_auto_tuning = params.pop('enable_auto_tuning', True)
+                logger.info(f"Auto-tuning of hyperparameters: {'Enabled' if enable_auto_tuning else 'Disabled'}")
+                
                 # Definir función de callback para actualizar la interfaz
                 def update_training_ui(metrics):
                     # Actualizar interfaz en el hilo principal
@@ -753,6 +757,7 @@ class MainApplication(tk.Frame):
                 model, train_env = self.training_manager.train(
                     train_data, test_data,
                     training_callback=update_training_ui,
+                    enable_auto_tuning=enable_auto_tuning,  # Pasar explícitamente
                     **params
                 )
                 

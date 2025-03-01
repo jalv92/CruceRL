@@ -288,3 +288,97 @@
 2025-03-01 17:58:08,291 - INFO - Módulos de trading inicializados correctamente
 2025-03-01 18:06:10,032 - INFO - Módulos de trading inicializados correctamente
 2025-03-01 18:12:52,267 - INFO - Módulos de trading inicializados correctamente
+2025-03-01 18:29:12,593 - INFO - Módulos de trading inicializados correctamente
+2025-03-01 18:30:18,393 - INFO - Iniciando proceso en modo: train
+2025-03-01 18:30:18,393 - INFO - Iniciando entrenamiento...
+2025-03-01 18:30:18,400 - INFO - Usando datos extraídos: data\extracted_data_20250301_044323.csv
+2025-03-01 18:30:18,440 - INFO - Prepared data with 22800 training bars and 5700 testing bars
+2025-03-01 18:30:18,440 - INFO - Datos cargados: 22800 registros de entrenamiento, 5700 de prueba
+2025-03-01 18:30:18,440 - INFO - Starting training with algorithm: PPO
+2025-03-01 18:30:18,440 - INFO - Training parameters: {'algo': 'PPO', 'policy': 'MlpPolicy', 'learning_rate': 0.0003, 'batch_size': 64, 'n_steps': 2048, 'total_timesteps': 500000, 'device': 'auto'}
+2025-03-01 18:30:18,440 - INFO - Environment parameters: {'initial_balance': 100000.0, 'commission': 0.0001, 'slippage': 0.0001, 'window_size': 10, 'reward_scaling': 0.02, 'position_size': 0.15, 'stop_loss_pct': 0.03, 'take_profit_pct': 0.09}
+2025-03-01 18:30:19,166 - INFO - Using device: cuda
+2025-03-01 18:30:34,861 - INFO - Training step: 5000
+2025-03-01 18:30:34,861 - INFO - Mean reward: 0.00, Mean episode length: 0.00
+2025-03-01 18:30:34,884 - INFO - New best model saved with reward: 0.00
+2025-03-01 18:30:50,712 - INFO - Training step: 10000
+2025-03-01 18:30:50,713 - INFO - Mean reward: 0.00, Mean episode length: 0.00
+2025-03-01 18:31:07,172 - INFO - Eval num_timesteps=10000, episode_reward=-0.61
+2025-03-01 18:31:07,176 - INFO - New best model saved with reward: -0.61
+2025-03-01 18:31:27,528 - INFO - Training step: 15000
+2025-03-01 18:31:27,528 - INFO - Mean reward: 0.00, Mean episode length: 0.00
+2025-03-01 18:31:43,951 - INFO - Training step: 20000
+2025-03-01 18:31:43,951 - INFO - Mean reward: 0.00, Mean episode length: 0.00
+2025-03-01 18:32:02,531 - INFO - Eval num_timesteps=20000, episode_reward=-4.41
+2025-03-01 18:32:19,649 - INFO - Training step: 25000
+2025-03-01 18:32:19,649 - INFO - Mean reward: -252.19, Mean episode length: 22790.00
+2025-03-01 18:32:37,276 - INFO - Training step: 30000
+2025-03-01 18:32:37,277 - INFO - Mean reward: -252.19, Mean episode length: 22790.00
+2025-03-01 18:33:01,686 - INFO - Eval num_timesteps=30000, episode_reward=-4.44
+2025-03-01 18:33:18,777 - INFO - Training step: 35000
+2025-03-01 18:33:18,778 - INFO - Mean reward: -252.19, Mean episode length: 22790.00
+2025-03-01 18:33:34,770 - INFO - Training step: 40000
+2025-03-01 18:33:34,771 - INFO - Mean reward: -252.19, Mean episode length: 22790.00
+2025-03-01 18:33:54,406 - INFO - Eval num_timesteps=40000, episode_reward=-4.58
+2025-03-01 18:34:14,691 - INFO - Training step: 45000
+2025-03-01 18:34:14,691 - INFO - Mean reward: -252.19, Mean episode length: 22790.00
+2025-03-01 18:34:30,157 - INFO - Training step: 50000
+2025-03-01 18:34:30,157 - INFO - Mean reward: -259.08, Mean episode length: 22790.00
+2025-03-01 18:34:50,709 - INFO - Eval num_timesteps=50000, episode_reward=-4.58
+2025-03-01 18:35:06,333 - INFO - Training step: 55000
+2025-03-01 18:35:06,334 - INFO - Mean reward: -259.08, Mean episode length: 22790.00
+2025-03-01 18:35:28,104 - INFO - Training step: 60000
+2025-03-01 18:35:28,105 - INFO - Mean reward: -259.08, Mean episode length: 22790.00
+2025-03-01 18:35:47,847 - INFO - Eval num_timesteps=60000, episode_reward=15.02
+2025-03-01 18:35:47,861 - INFO - New best model saved with reward: 15.02
+2025-03-01 18:36:12,121 - INFO - Training step: 65000
+2025-03-01 18:36:12,121 - INFO - Mean reward: -259.08, Mean episode length: 22790.00
+2025-03-01 18:36:28,170 - INFO - Training step: 70000
+2025-03-01 18:36:28,170 - INFO - Mean reward: -249.09, Mean episode length: 22790.00
+2025-03-01 18:36:46,175 - INFO - Eval num_timesteps=70000, episode_reward=-2.40
+2025-03-01 18:37:02,458 - INFO - Training step: 75000
+2025-03-01 18:37:02,468 - INFO - Mean reward: -249.09, Mean episode length: 22790.00
+2025-03-01 18:37:21,297 - INFO - Training step: 80000
+2025-03-01 18:37:21,298 - INFO - Mean reward: -249.09, Mean episode length: 22790.00
+2025-03-01 18:37:40,254 - INFO - Eval num_timesteps=80000, episode_reward=-4.58
+2025-03-01 18:37:56,170 - INFO - Training step: 85000
+2025-03-01 18:37:56,171 - INFO - Mean reward: -249.09, Mean episode length: 22790.00
+2025-03-01 18:38:13,079 - INFO - Training step: 90000
+2025-03-01 18:38:13,081 - INFO - Mean reward: -249.09, Mean episode length: 22790.00
+2025-03-01 18:38:31,612 - INFO - Eval num_timesteps=90000, episode_reward=-4.58
+2025-03-01 18:38:50,983 - INFO - Training step: 95000
+2025-03-01 18:38:50,983 - INFO - Mean reward: -240.20, Mean episode length: 22790.00
+2025-03-01 18:39:08,112 - INFO - Training step: 100000
+2025-03-01 18:39:08,112 - INFO - Mean reward: -240.20, Mean episode length: 22790.00
+2025-03-01 18:39:27,753 - INFO - Eval num_timesteps=100000, episode_reward=-4.58
+2025-03-01 18:39:46,002 - INFO - Training step: 105000
+2025-03-01 18:39:46,002 - INFO - Mean reward: -240.20, Mean episode length: 22790.00
+2025-03-01 18:40:03,422 - INFO - Training step: 110000
+2025-03-01 18:40:03,423 - INFO - Mean reward: -240.20, Mean episode length: 22790.00
+2025-03-01 18:40:26,942 - INFO - Eval num_timesteps=110000, episode_reward=-4.58
+2025-03-01 18:40:50,464 - INFO - Training step: 115000
+2025-03-01 18:40:50,464 - INFO - Mean reward: -228.07, Mean episode length: 22790.00
+2025-03-01 18:41:06,430 - INFO - Training step: 120000
+2025-03-01 18:41:06,430 - INFO - Mean reward: -228.07, Mean episode length: 22790.00
+2025-03-01 18:41:29,518 - INFO - Eval num_timesteps=120000, episode_reward=-4.58
+2025-03-01 18:41:47,208 - INFO - Training step: 125000
+2025-03-01 18:41:47,208 - INFO - Mean reward: -228.07, Mean episode length: 22790.00
+2025-03-01 18:42:03,697 - INFO - Training step: 130000
+2025-03-01 18:42:03,697 - INFO - Mean reward: -228.07, Mean episode length: 22790.00
+2025-03-01 18:42:23,955 - INFO - Eval num_timesteps=130000, episode_reward=-4.58
+2025-03-01 18:42:40,534 - INFO - Training step: 135000
+2025-03-01 18:42:40,535 - INFO - Mean reward: -228.07, Mean episode length: 22790.00
+2025-03-01 18:43:00,373 - INFO - Training step: 140000
+2025-03-01 18:43:00,373 - INFO - Mean reward: -221.76, Mean episode length: 22790.00
+2025-03-01 18:43:26,595 - INFO - Eval num_timesteps=140000, episode_reward=-4.58
+2025-03-01 18:43:42,234 - INFO - Training step: 145000
+2025-03-01 18:43:42,234 - INFO - Mean reward: -221.76, Mean episode length: 22790.00
+2025-03-01 18:43:56,983 - INFO - Training step: 150000
+2025-03-01 18:43:56,983 - INFO - Mean reward: -221.76, Mean episode length: 22790.00
+2025-03-01 18:44:13,242 - INFO - Eval num_timesteps=150000, episode_reward=-4.58
+2025-03-01 18:44:22,566 - INFO - Deteniendo proceso...
+2025-03-01 18:44:22,582 - INFO - Proceso detenido correctamente
+2025-03-01 18:44:26,557 - INFO - Training step: 155000
+2025-03-01 18:44:26,557 - INFO - Mean reward: -221.76, Mean episode length: 22790.00
+2025-03-01 18:44:43,816 - INFO - Training step: 160000
+2025-03-01 18:44:43,816 - INFO - Mean reward: -221.03, Mean episode length: 22790.00

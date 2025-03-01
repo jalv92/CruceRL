@@ -797,6 +797,21 @@ class ChartPanel(BasePanel):
                     activeforeground=COLORS['accent']
                 )
                 rb.pack(side=tk.LEFT, padx=10)
+            
+            row += 1
+            
+            # Checkbox para Auto-tuning - NUEVO
+            auto_tune_check = tk.Checkbutton(
+                frame, 
+                text="Auto-tune Hyperparameters", 
+                variable=self.config_panel.auto_tune_var,
+                bg=COLORS['bg_dark'],
+                fg=COLORS['fg_light'],
+                selectcolor=COLORS['bg_medium'],
+                activebackground=COLORS['bg_dark'],
+                activeforeground=COLORS['accent']
+            )
+            auto_tune_check.grid(row=row, column=0, columnspan=2, sticky='w', padx=10, pady=5)
         
         def setup_env_tab(self, frame):
             """Configurar pestaña de entorno"""
@@ -1078,6 +1093,7 @@ class TrainingConfigPanel(BasePanel):
         self.batch_size_var = tk.StringVar(value="64")
         self.n_steps_var = tk.StringVar(value="2048")
         self.device_var = tk.StringVar(value="auto")
+        self.auto_tune_var = tk.BooleanVar(value=True)  # Añadido para auto-tuning
         
         # Crear notebook para pestañas
         self.notebook = ttk.Notebook(container)
@@ -1110,6 +1126,64 @@ class TrainingConfigPanel(BasePanel):
         
         row += 1
         
+        # Timesteps
+        tk.Label(basic_frame, text="Timesteps:", **label_style).grid(row=row, column=0, sticky='w', padx=10, pady=5)
+        timesteps_entry = tk.Entry(basic_frame, textvariable=self.timesteps_var, width=10, **entry_style)
+        timesteps_entry.grid(row=row, column=1, sticky='w', padx=10, pady=5)
+        
+        row += 1
+        
+        # Learning rate
+        tk.Label(basic_frame, text="Learning Rate:", **label_style).grid(row=row, column=0, sticky='w', padx=10, pady=5)
+        lr_entry = tk.Entry(basic_frame, textvariable=self.learning_rate_var, width=10, **entry_style)
+        lr_entry.grid(row=row, column=1, sticky='w', padx=10, pady=5)
+        
+        row += 1
+        
+        # Batch size
+        tk.Label(basic_frame, text="Batch Size:", **label_style).grid(row=row, column=0, sticky='w', padx=10, pady=5)
+        batch_entry = tk.Entry(basic_frame, textvariable=self.batch_size_var, width=10, **entry_style)
+        batch_entry.grid(row=row, column=1, sticky='w', padx=10, pady=5)
+        
+        row += 1
+        
+        # N steps
+        tk.Label(basic_frame, text="N Steps:", **label_style).grid(row=row, column=0, sticky='w', padx=10, pady=5)
+        n_steps_entry = tk.Entry(basic_frame, textvariable=self.n_steps_var, width=10, **entry_style)
+        n_steps_entry.grid(row=row, column=1, sticky='w', padx=10, pady=5)
+        
+        row += 1
+        
+        # Device
+        tk.Label(basic_frame, text="Device:", **label_style).grid(row=row, column=0, sticky='w', padx=10, pady=5)
+        device_frame = tk.Frame(basic_frame, bg=COLORS['bg_dark'])
+        device_frame.grid(row=row, column=1, sticky='ew', padx=10, pady=5)
+        
+        for device in ['auto', 'cpu', 'cuda']:
+            rb = tk.Radiobutton(
+                device_frame, text=device, variable=self.device_var, value=device,
+                bg=COLORS['bg_dark'], fg=COLORS['fg_light'],
+                selectcolor=COLORS['bg_medium'], 
+                activebackground=COLORS['bg_dark'],
+                activeforeground=COLORS['accent']
+            )
+            rb.pack(side=tk.LEFT, padx=10)
+        
+        row += 1
+        
+        # Checkbox para Auto-tuning - NUEVO
+        auto_tune_check = tk.Checkbutton(
+            basic_frame, 
+            text="Auto-tune Hyperparameters", 
+            variable=self.auto_tune_var,
+            bg=COLORS['bg_dark'],
+            fg=COLORS['fg_light'],
+            selectcolor=COLORS['bg_medium'],
+            activebackground=COLORS['bg_dark'],
+            activeforeground=COLORS['accent']
+        )
+        auto_tune_check.grid(row=row, column=0, columnspan=2, sticky='w', padx=10, pady=5)        
+               
         # Timesteps
         tk.Label(basic_frame, text="Timesteps:", **label_style).grid(row=row, column=0, sticky='w', padx=10, pady=5)
         timesteps_entry = tk.Entry(basic_frame, textvariable=self.timesteps_var, width=10, **entry_style)
@@ -1460,6 +1534,7 @@ Características principales:
                 'batch_size': int(self.batch_size_var.get()),
                 'n_steps': int(self.n_steps_var.get()),
                 'device': self.device_var.get(),
+                'enable_auto_tuning': bool(self.auto_tune_var.get()),  # Añadido para auto-tuning
             }
             
             # Parámetros del entorno

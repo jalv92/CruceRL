@@ -1446,8 +1446,8 @@ Características principales:
     
     def show(self):
         """Muestra el panel de configuración en una ventana separada"""
-        # No necesitamos importar TrainingConfigDialog ya que está en el mismo módulo
-        self.dialog = TrainingConfigDialog(self.winfo_toplevel(), self)
+        from src.RLTradingSystemGUI import ChartPanel
+        self.dialog = ChartPanel.TrainingConfigDialog(self.winfo_toplevel(), self)
     
     def get_training_params(self):
         """Obtener los parámetros de entrenamiento como dict"""

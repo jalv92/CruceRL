@@ -1084,9 +1084,14 @@ class ControlPanel(BasePanel):
         self._update_button_visibility()
 
     def _on_connect_click(self):
-        # Just call the on_connect method without parameters
-        # The connect_to_ninjatrader method will get IP and port values from the UI
-        self.on_connect()
+        ip = self.ip_var.get()
+        try:
+            data_port = int(self.data_port_var.get())
+        except ValueError:
+            messagebox.showerror("Invalid Port", "Data port must be a valid number.")
+            return
+        # Corregir esta línea para pasar los argumentos
+        self.on_connect(ip, data_port)  # Añadir los parámetros ip y data_port
     
     def _on_train_config_click(self):
         self.on_train_config()

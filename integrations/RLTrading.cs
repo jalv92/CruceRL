@@ -57,6 +57,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int orderRetryCount = 3;
         private int orderRetryDelayMs = 1000;
         private bool connectionErrorLogged = false; // Prevent log spam
+        
+        // Data extraction variables
+        private bool isExtractingData = false;
+        private bool isExtractionComplete = false;
+        private int totalBarsToExtract = 0;
+        private int extractedBarsCount = 0;
+        private string extractionCommand = "EXTRACT_HISTORICAL_DATA";
         #endregion
 
         #region Properties
@@ -101,8 +108,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int ADXPeriod { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Send Historical Bars", Description = "Number of historical bars to send at startup", Order = 11, GroupName = "Data Settings")]
-        public int HistoricalBars { get; set; }
+        [Display(Name = "Max Historical Bars", Description = "Maximum number of historical bars to extract", Order = 11, GroupName = "Data Settings")]
+        public int MaxHistoricalBars { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Connection Timeout", Description = "Timeout in seconds for socket connections", Order = 12, GroupName = "Socket Settings")]
@@ -131,7 +138,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EMALongPeriod = 21;
                 ATRPeriod = 14;
                 ADXPeriod = 14;
-                HistoricalBars = 6000; // Increased to match Python requirement
+                MaxHistoricalBars = 6000; // Default maximum bars to extract
                 ConnectionTimeout = 5;
                 UseManagedOrders = true; // Default to managed orders
                 
@@ -176,12 +183,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Initialize connections when switching to real-time
                 InitializeDataSender();
                 InitializeOrderReceiver();
-                
-                // Send historical data
-                if (HistoricalBars > 0)
-                {
-                    SendHistoricalData();
-                }
             }
             else if (State == State.Terminated)
             {
@@ -223,6 +224,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 // Send current bar data
                 SendBarData(0);
+            }
+            
+            // If we are extracting historical data, check if we need to send more bars
+            if (isExtractingData && !isExtractionComplete)
+            {
+                SendHistoricalBatch();
             }
         }
 
@@ -328,23 +335,107 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        private void SendHistoricalData()
+        // New method for extracting historical data on demand
+        private void StartHistoricalDataExtraction()
         {
-            if (isInitialDataSent || HistoricalBars <= 0)
-                return;
-                
-            Print("Sending " + HistoricalBars + " historical bars...");
-            
-            // Calculate the starting bar index
-            int startBar = Math.Min(CurrentBar, HistoricalBars);
-            
-            for (int i = startBar; i > 0; i--)
+            if (isExtractingData)
             {
-                SendBarData(i);
+                Print("Historical data extraction already in progress");
+                return;
             }
             
-            isInitialDataSent = true;
-            Print("Historical data sent.");
+            int availableBars = Math.Min(CurrentBar, MaxHistoricalBars);
+            if (availableBars <= 0)
+            {
+                Print("Not enough bars available for extraction");
+                return;
+            }
+            
+            // Initialize extraction variables
+            isExtractingData = true;
+            isExtractionComplete = false;
+            totalBarsToExtract = availableBars;
+            extractedBarsCount = 0;
+            
+            Print($"Starting extraction of {totalBarsToExtract} historical bars...");
+            
+            // Send extraction start message
+            string startMessage = $"EXTRACTION_START:{totalBarsToExtract}\n";
+            SendDataMessage(startMessage);
+            
+            // Start sending historical data
+            SendHistoricalBatch();
+        }
+        
+        private void SendHistoricalBatch()
+        {
+            // Send batches of 100 bars at a time to avoid overloading the connection
+            int batchSize = 100;
+            int barsToSend = Math.Min(batchSize, totalBarsToExtract - extractedBarsCount);
+            
+            if (barsToSend <= 0)
+            {
+                // Extraction complete
+                if (!isExtractionComplete)
+                {
+                    string completeMessage = "EXTRACTION_COMPLETE\n";
+                    SendDataMessage(completeMessage);
+                    
+                    isExtractionComplete = true;
+                    isExtractingData = false;
+                    Print($"Historical data extraction completed: {extractedBarsCount} bars sent");
+                }
+                return;
+            }
+            
+            // Send a batch of historical bars
+            for (int i = 0; i < barsToSend; i++)
+            {
+                int barIndex = totalBarsToExtract - extractedBarsCount - i - 1;
+                if (barIndex >= 0 && barIndex <= CurrentBar)
+                {
+                    SendBarDataForExtraction(barIndex);
+                    extractedBarsCount++;
+                }
+            }
+            
+            // Send progress update
+            double progressPercent = (double)extractedBarsCount / totalBarsToExtract * 100;
+            string progressMessage = $"EXTRACTION_PROGRESS:{extractedBarsCount}:{totalBarsToExtract}:{progressPercent:F1}\n";
+            SendDataMessage(progressMessage);
+            
+            Print($"Extraction progress: {progressPercent:F1}% ({extractedBarsCount}/{totalBarsToExtract})");
+        }
+        
+        private void SendBarDataForExtraction(int barIndex)
+        {
+            if (barIndex > CurrentBar)
+                return;
+                
+            try
+            {
+                // Prepare data message with OHLC and indicators
+                string message = string.Format("HISTORICAL:{0},{1},{2},{3},{4},{5},{6},{7},{8}",
+                    Open[barIndex].ToString("F2"),
+                    High[barIndex].ToString("F2"),
+                    Low[barIndex].ToString("F2"),
+                    Close[barIndex].ToString("F2"),
+                    emaShort[barIndex].ToString("F2"),
+                    emaLong[barIndex].ToString("F2"),
+                    atr[barIndex].ToString("F4"),
+                    adx[barIndex].ToString("F2"),
+                    Time[barIndex].ToString("yyyy-MM-dd HH:mm:ss"));
+                
+                // Add newline for message separation
+                message += "\n";
+                
+                // Send the message
+                SendDataMessage(message);
+            }
+            catch (Exception ex)
+            {
+                Print($"Error sending historical bar data: {ex.Message}");
+            }
         }
 
         private void SendBarData(int barIndex)
@@ -369,6 +460,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Add newline for message separation
                 message += "\n";
                 
+                // Send the message
+                SendDataMessage(message);
+            }
+            catch (Exception ex)
+            {
+                Print("Error sending data: " + ex.Message);
+            }
+        }
+        
+        private void SendDataMessage(string message)
+        {
+            try
+            {
                 // Check if connected
                 if (dataSender != null && dataSender.Connected && dataSenderStream != null && dataSenderStream.CanWrite)
                 {
@@ -393,7 +497,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             catch (Exception ex)
             {
-                Print("Error sending data: " + ex.Message);
+                Print("Error sending data message: " + ex.Message);
                 // Try to reconnect on next update
                 CloseDataSender();
             }
@@ -565,6 +669,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 
                 Print("Received order message: " + message);
                 
+                // Check for special command messages
+                if (message.StartsWith(extractionCommand))
+                {
+                    // Handle data extraction command
+                    this.Dispatcher.InvokeAsync(() => StartHistoricalDataExtraction());
+                    return;
+                }
+                
                 string[] parts = message.Split(',');
                 
                 if (parts.Length < 5)
@@ -624,6 +736,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Print("Error processing order message: " + ex.Message);
             }
         }
+
+        // Rest of the class implementation remains the same...
 
         private void ExecuteTradingDecision()
         {

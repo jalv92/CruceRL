@@ -491,37 +491,35 @@ class MainApplication(tk.Frame):
             
         logger.info("Proceso detenido correctamente")
         
-    def connect_to_ninjatrader(self):
+    def connect_to_ninjatrader(self, ip, port):
         """Conecta con NinjaTrader"""
         try:
-            server_ip = self.control_panel.ip_var.get()
-            data_port = int(self.control_panel.data_port_var.get())
-            order_port = data_port + 1
+            # Si ya existe una interfaz, detenerla primero
+            if self.nt_interface:
+                self.nt_interface.stop()
+                self.nt_interface = None
             
-            # Crear interfaz con NinjaTrader
+            logger.info(f"Conectando a NinjaTrader en {ip}:{port}...")
+            
+            # Crear interfaz
             self.nt_interface = NinjaTraderInterface(
-                server_ip=server_ip,
-                data_port=data_port,
-                order_port=order_port
+                server_ip=ip,
+                data_port=port,
+                order_port=port + 1
             )
             
-            # Intentar conexión
-            self.nt_interface.connect()
+            # Iniciar interfaz (esto inicia los sockets y threads de comunicación)
+            self.nt_interface.start()
             
-            if self.nt_interface.is_connected():
-                self.connected = True
-                messagebox.showinfo("Conexión", "Conectado correctamente a NinjaTrader")
-                logger.info(f"Conectado a NinjaTrader: {server_ip}:{data_port}")
-                return True
-            else:
-                messagebox.showerror("Error", "No se pudo conectar a NinjaTrader")
-                logger.error(f"Error al conectar a NinjaTrader: {server_ip}:{data_port}")
-                return False
-                
+            self.connected = True
+            self.stats_panel.update_connection(True)
+            logger.info(f"Conexión exitosa con NinjaTrader en {ip}:{port}")
+            messagebox.showinfo("Conexión", f"Conectado a NinjaTrader en {ip}:{port}")
+            
         except Exception as e:
-            messagebox.showerror("Error", f"Error al conectar: {str(e)}")
             logger.error(f"Error en conexión: {e}")
-            return False
+            self.stats_panel.update_connection(False)
+            messagebox.showerror("Error de Conexión", f"No se pudo conectar a NinjaTrader: {e}")
             
     def setup_menu(self):
         """Configura el menú de la aplicación"""

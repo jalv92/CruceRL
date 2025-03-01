@@ -1,0 +1,9 @@
+RL Trading System Interface Overview
+
+Main Sections:
+1. Menu Bar: Ubicado en la parte superior, con opciones para importar/exportar modelos y acceder a la ayuda.
+2. Chart Panel: Muestra gráficos de precios y la evolución del balance de la cuenta.
+3. Stats Panel: Visualiza el balance, P&L, número de operaciones y win rate.
+4. Trades Panel: Lista las operaciones recientes con hora, acción, precio y P&L.
+5. Control Panel: Permite conectarse al servidor, elegir el modo de operación (train, test, server) y controlar el proceso.
+6. Log Panel: Muestra mensajes del sistema para facilitar la solución de problemas.

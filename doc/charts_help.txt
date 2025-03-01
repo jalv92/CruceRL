@@ -1,0 +1,11 @@
+Understanding the Charts
+
+Price Chart (Top):
+- Muestra la evolución del precio del mercado a lo largo del tiempo.
+- Señales de compra se indican con triángulos verdes.
+- Señales de venta se indican con triángulos rojos.
+- Señales de salida se indican con círculos azules.
+
+Account Balance Chart (Bottom):
+- Representa la evolución del balance de la cuenta.
+- Permite visualizar tendencias de rendimiento a lo largo del tiempo.

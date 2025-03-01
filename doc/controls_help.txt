@@ -1,0 +1,17 @@
+Controls Guide
+
+Connection Settings:
+- Server IP: Dirección IP para conectarse a la plataforma de trading.
+- Data Port: Puerto para recibir datos de mercado.
+- Connect Button: Establece la conexión con el sistema.
+
+Operation Modes:
+- Train: Modo de entrenamiento simulado del modelo.
+- Test: Modo de prueba del modelo sin ejecutar operaciones reales.
+- Server: Modo de trading en vivo (requiere conexión a NinjaTrader).
+
+Control Buttons:
+- Start: Inicia el proceso en el modo seleccionado.
+- Pause/Resume: Pausa o reanuda el proceso.
+- Stop: Detiene el proceso en ejecución.
+- Auto Trading Toggle: Activa o desactiva la ejecución automática de operaciones.

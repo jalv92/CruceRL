@@ -1,0 +1,23 @@
+2025-03-01 00:23:14,258 - INFO - Módulos de trading inicializados correctamente
+2025-03-01 00:23:23,450 - ERROR - Error al cargar archivo de ayuda interface_help.txt: [Errno 2] No such file or directory: 'interface_help.txt'
+2025-03-01 00:23:23,450 - ERROR - Error al cargar archivo de ayuda controls_help.txt: [Errno 2] No such file or directory: 'controls_help.txt'
+2025-03-01 00:23:23,464 - ERROR - Error al cargar archivo de ayuda charts_help.txt: [Errno 2] No such file or directory: 'charts_help.txt'
+2025-03-01 00:23:23,464 - ERROR - Error al cargar archivo de ayuda trading_help.txt: [Errno 2] No such file or directory: 'trading_help.txt'
+2025-03-01 00:27:24,146 - INFO - Módulos de trading inicializados correctamente
+2025-03-01 00:27:30,874 - INFO - Archivo de ayuda cargado desde: c:\Users\javlo\Documents\NT8 RL\doc\interface_help.txt
+2025-03-01 00:27:30,874 - INFO - Archivo de ayuda cargado desde: c:\Users\javlo\Documents\NT8 RL\doc\controls_help.txt
+2025-03-01 00:27:30,874 - INFO - Archivo de ayuda cargado desde: c:\Users\javlo\Documents\NT8 RL\doc\charts_help.txt
+2025-03-01 00:27:30,874 - INFO - Archivo de ayuda cargado desde: c:\Users\javlo\Documents\NT8 RL\doc\trading_help.txt
+2025-03-01 00:27:49,694 - INFO - Archivo de ayuda cargado desde: c:\Users\javlo\Documents\NT8 RL\doc\interface_help.txt
+2025-03-01 00:27:49,694 - INFO - Archivo de ayuda cargado desde: c:\Users\javlo\Documents\NT8 RL\doc\controls_help.txt
+2025-03-01 00:27:49,694 - INFO - Archivo de ayuda cargado desde: c:\Users\javlo\Documents\NT8 RL\doc\charts_help.txt
+2025-03-01 00:27:49,710 - INFO - Archivo de ayuda cargado desde: c:\Users\javlo\Documents\NT8 RL\doc\trading_help.txt
+2025-03-01 00:35:03,389 - INFO - Selected CSV file: DAT_NT_XAGUSD_M1_2024.csv
+2025-03-01 00:35:10,961 - INFO - Iniciando proceso en modo: train
+2025-03-01 00:35:10,961 - INFO - Iniciando entrenamiento...
+2025-03-01 00:35:11,167 - ERROR - Error en entrenamiento: 'close'
+2025-03-01 00:35:20,372 - INFO - Iniciando proceso en modo: backtest
+2025-03-01 00:35:41,850 - INFO - Selected CSV file: DAT_NT_XAGUSD_M1_2024.csv
+2025-03-01 00:35:43,920 - INFO - Iniciando proceso en modo: train
+2025-03-01 00:35:43,921 - INFO - Iniciando entrenamiento...
+2025-03-01 00:35:44,111 - ERROR - Error en entrenamiento: 'close'

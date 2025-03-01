@@ -1,0 +1,12 @@
+Trading with the RL System
+
+Reinforcement Learning Basics:
+- El sistema utiliza aprendizaje por refuerzo para optimizar las decisiones de trading.
+- Aprende mediante simulaciones de operaciones.
+
+Trading Statistics:
+- Muestra métricas clave como balance, P&L total, número de operaciones y win rate.
+
+Trade Records:
+- Lista cada operación con detalles de entrada, salida y ganancias/pérdidas.
+- Los registros se codifican por colores: verde para ganancias y rojo para pérdidas.

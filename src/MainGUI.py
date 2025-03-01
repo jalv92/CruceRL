@@ -657,9 +657,19 @@ class MainApplication(tk.Frame):
         """Muestra la ayuda según el tema seleccionado"""
         help_file = f"doc/{topic}_help.txt"
         if os.path.exists(help_file):
-            with open(help_file, 'r') as f:
-                help_text = f.read()
-            help_dialog = HelpDialog(self, f"Ayuda - {topic.capitalize()}", help_text)
+            try:
+                # Intentar con UTF-8 primero
+                with open(help_file, 'r', encoding='utf-8') as f:
+                    help_text = f.read()
+                help_dialog = HelpDialog(self, f"Ayuda - {topic.capitalize()}", help_text)
+            except UnicodeDecodeError:
+                # Si falla, intentar con latin-1 que es más permisivo
+                try:
+                    with open(help_file, 'r', encoding='latin-1') as f:
+                        help_text = f.read()
+                    help_dialog = HelpDialog(self, f"Ayuda - {topic.capitalize()}", help_text)
+                except Exception as e:
+                    messagebox.showerror("Error de lectura", f"No se pudo leer el archivo de ayuda: {e}")
         else:
             messagebox.showinfo("Ayuda", "Tema de ayuda no disponible")
     

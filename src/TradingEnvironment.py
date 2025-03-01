@@ -13,8 +13,12 @@ class TradingEnvironment(gym.Env):
     def __init__(self, df: pd.DataFrame, initial_balance: float = 100000.0, 
                  max_steps: int = None, window_size: int = 10,
                  commission: float = 0.0001, slippage: float = 0.0001,
-                 reward_scaling: float = 0.01, position_size: float = 1.0,
-                 stop_loss_pct: Optional[float] = 0.02, take_profit_pct: Optional[float] = 0.04):
+                 reward_scaling: float = 0.05, position_size: float = 1.0,
+                 stop_loss_pct: Optional[float] = 0.02, take_profit_pct: Optional[float] = 0.04,
+                 inactivity_penalty: float = -0.00005, bankruptcy_penalty: float = -1.0,
+                 drawdown_factor: float = 0.2, win_rate_bonus: float = 0.0005,
+                 normalize_rewards: bool = True, capital_efficiency_bonus: float = 0.0,
+                 time_decay_factor: float = 0.0):
         """
         Initialize the trading environment
         
@@ -29,6 +33,13 @@ class TradingEnvironment(gym.Env):
             position_size: Base position size as percentage of account balance
             stop_loss_pct: Optional stop loss percentage (None to disable)
             take_profit_pct: Optional take profit percentage (None to disable)
+            inactivity_penalty: Small penalty applied each step to discourage excessive waiting
+            bankruptcy_penalty: Severe penalty if balance drops to zero
+            drawdown_factor: Penalty factor based on current drawdown
+            win_rate_bonus: Bonus reward for maintaining high win rate
+            normalize_rewards: Whether to normalize rewards relative to initial balance
+            capital_efficiency_bonus: Small bonus for keeping capital employed in the market
+            time_decay_factor: Discount factor for rewards based on trade duration
         """
         super(TradingEnvironment, self).__init__()
         
@@ -48,6 +59,15 @@ class TradingEnvironment(gym.Env):
         self.position_size = position_size
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
+        
+        # Store new reward parameters
+        self.inactivity_penalty = inactivity_penalty
+        self.bankruptcy_penalty = bankruptcy_penalty
+        self.drawdown_factor = drawdown_factor
+        self.win_rate_bonus = win_rate_bonus
+        self.normalize_rewards = normalize_rewards
+        self.capital_efficiency_bonus = capital_efficiency_bonus
+        self.time_decay_factor = time_decay_factor
         
         # Set the maximum number of steps
         self.max_steps = len(df) - window_size if max_steps is None else min(max_steps, len(df) - window_size)
@@ -119,8 +139,20 @@ class TradingEnvironment(gym.Env):
         prev_price = self.df.iloc[self.current_step + self.window_size - 1]['close']
         current_price = self.df.iloc[self.current_step + self.window_size]['close']
         
-        # Initialize reward with a small negative value to encourage efficiency
-        reward = -0.0001
+        # Initialize reward components dictionary
+        reward_components = {
+            'inactivity': self.inactivity_penalty,  # Base penalty for each step
+            'pnl': 0.0,                             # P&L component (updated during trading)
+            'drawdown': 0.0,                        # Drawdown penalty
+            'win_rate': 0.0,                        # Win rate bonus
+            'capital_efficiency': 0.0,              # Capital efficiency bonus
+            'time_decay': 0.0                       # Time decay factor
+        }
+        
+        # Trade tracking
+        trade_closed = False
+        position_held_steps = 0
+        trade_pnl = 0.0
         
         # Initialize flags for stop loss and take profit
         sl_tp_triggered = False
@@ -129,6 +161,13 @@ class TradingEnvironment(gym.Env):
         
         # Calculate stop loss and take profit levels if we have a position
         if self.position != 0:
+            # Track how long the position has been held
+            position_held_steps = self.current_step - self.entry_idx
+            
+            # Apply capital efficiency bonus if enabled
+            if self.capital_efficiency_bonus > 0:
+                reward_components['capital_efficiency'] = self.capital_efficiency_bonus
+            
             if self.stop_loss_pct is not None:
                 if self.position == 1:  # Long position
                     sl_price = self.entry_price * (1 - self.stop_loss_pct)
@@ -191,7 +230,8 @@ class TradingEnvironment(gym.Env):
                 'position': self.position,
                 'pnl': pnl_amount,
                 'balance': self.balance,
-                'exit_reason': 'stop_loss' if self.stop_activated else 'take_profit'
+                'exit_reason': 'stop_loss' if self.stop_activated else 'take_profit',
+                'trade_duration': position_held_steps
             }
             self.trade_history.append(trade_info)
             
@@ -202,8 +242,22 @@ class TradingEnvironment(gym.Env):
             self.stop_activated = False
             self.take_profit_activated = False
             
-            # Set reward as scaled profit/loss
-            reward = pnl_amount * self.reward_scaling
+            # Calculate normalized P&L if enabled
+            if self.normalize_rewards:
+                normalized_pnl = pnl_amount / self.initial_balance
+            else:
+                normalized_pnl = pnl_amount
+            
+            # Apply time decay if enabled
+            time_decay = 0
+            if self.time_decay_factor > 0:
+                time_decay = -self.time_decay_factor * position_held_steps
+            
+            # Set PnL component
+            reward_components['pnl'] = normalized_pnl * self.reward_scaling
+            reward_components['time_decay'] = time_decay
+            
+            trade_closed = True
         
         # Process new trade action if we don't have a position or are changing position
         if not sl_tp_triggered and ((self.position == 0 and trade_action != 0) or 
@@ -240,17 +294,32 @@ class TradingEnvironment(gym.Env):
                     'position': self.position,
                     'pnl': pnl_amount,
                     'balance': self.balance,
-                    'exit_reason': 'signal'
+                    'exit_reason': 'signal',
+                    'trade_duration': position_held_steps
                 }
                 self.trade_history.append(trade_info)
                 
-                # Set reward as scaled profit/loss
-                reward = pnl_amount * self.reward_scaling
+                # Calculate normalized P&L if enabled
+                if self.normalize_rewards:
+                    normalized_pnl = pnl_amount / self.initial_balance
+                else:
+                    normalized_pnl = pnl_amount
+                
+                # Apply time decay if enabled
+                time_decay = 0
+                if self.time_decay_factor > 0:
+                    time_decay = -self.time_decay_factor * position_held_steps
+                
+                # Set PnL component
+                reward_components['pnl'] = normalized_pnl * self.reward_scaling
+                reward_components['time_decay'] = time_decay
                 
                 # Reset position before new entry
                 self.position = 0
                 self.entry_price = 0
                 self.profit_loss = 0
+                
+                trade_closed = True
             
             # Enter new position if requested
             if trade_action != 0:
@@ -264,7 +333,8 @@ class TradingEnvironment(gym.Env):
                 self.entry_idx = self.current_step + self.window_size
                 
                 # Apply commission
-                self.balance -= self.balance * self.position_size * self.commission
+                commission_cost = self.balance * self.position_size * self.commission
+                self.balance -= commission_cost
                 
                 # Log the trade entry
                 trade_info = {
@@ -288,11 +358,24 @@ class TradingEnvironment(gym.Env):
             unrealized_pnl = unrealized_pnl * self.balance * self.position_size
         
         # Track max balance and drawdown
-        self.balance_history.append(self.balance + unrealized_pnl)
-        if self.balance + unrealized_pnl > self.max_balance:
-            self.max_balance = self.balance + unrealized_pnl
-        current_drawdown = (self.max_balance - (self.balance + unrealized_pnl)) / self.max_balance if self.max_balance > 0 else 0
+        current_portfolio_value = self.balance + unrealized_pnl
+        self.balance_history.append(current_portfolio_value)
+        
+        if current_portfolio_value > self.max_balance:
+            self.max_balance = current_portfolio_value
+        
+        # Calculate current drawdown and add to reward components
+        current_drawdown = (self.max_balance - current_portfolio_value) / self.max_balance if self.max_balance > 0 else 0
         self.max_drawdown = max(self.max_drawdown, current_drawdown)
+        
+        # Add drawdown penalty to reward components
+        reward_components['drawdown'] = -current_drawdown * self.drawdown_factor
+        
+        # Add win rate bonus if applicable
+        if self.win_rate_bonus > 0 and self.trade_count > 0:
+            win_rate = self.successful_trades / self.trade_count
+            if win_rate > 0.5:  # Only give bonus for win rates > 50%
+                reward_components['win_rate'] = self.win_rate_bonus * (win_rate - 0.5) * 100
         
         # Move to the next step
         self.current_step += 1
@@ -305,7 +388,10 @@ class TradingEnvironment(gym.Env):
         # Bankrupt check
         if self.balance <= 0:
             done = True
-            reward = -1  # Extra penalty for bankruptcy
+            reward_components['pnl'] = self.bankruptcy_penalty  # Severe penalty for bankruptcy
+        
+        # Calculate total reward
+        reward = sum(reward_components.values())
         
         # Get the new observation
         observation = self._get_observation()
@@ -322,7 +408,9 @@ class TradingEnvironment(gym.Env):
             'max_drawdown': self.max_drawdown,
             'current_position': self.position,
             'step': self.current_step,
-            'total_steps': self.total_steps
+            'total_steps': self.total_steps,
+            'reward_components': reward_components,
+            'current_drawdown': current_drawdown
         }
         
         return observation, reward, done, truncated, info

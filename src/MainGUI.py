@@ -572,6 +572,7 @@ class MainApplication(tk.Frame):
         help_menu.add_command(label="Gráficos", command=lambda: self.show_help("charts"))
         help_menu.add_command(label="Controles", command=lambda: self.show_help("controls"))
         help_menu.add_command(label="Trading", command=lambda: self.show_help("trading"))
+        help_menu.add_command(label="Parámetros de Recompensa", command=lambda: self.show_help("rewards"))
         help_menu.add_separator()
         help_menu.add_command(label="Acerca de", command=self.show_about)
     

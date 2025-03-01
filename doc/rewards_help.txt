@@ -1,0 +1,105 @@
+Sistema de Recompensas en Aprendizaje por Refuerzo para Trading
+
+El sistema de recompensas es el mecanismo fundamental que guía al agente de RL para desarrollar estrategias de trading efectivas. Un sistema bien equilibrado incentiva tanto la búsqueda de ganancias como la gestión prudente del riesgo.
+
+PARÁMETROS BÁSICOS
+-----------------
+
+Factor de Escalado (Reward Scaling)
+- Valor predeterminado: 0.05
+- Rango recomendado: 0.01 - 0.1
+- Función: Controla la magnitud general de las recompensas por operaciones.
+- Impacto: Valores más altos priorizan P&L inmediato sobre otras consideraciones.
+
+Penalización por Inactividad (Inactivity Penalty)
+- Valor predeterminado: -0.00005
+- Rango recomendado: -0.0005 - 0
+- Función: Pequeña penalización por paso para desalentar la inactividad excesiva.
+- Impacto: Valores más negativos fomentan trading más frecuente; valores cercanos a cero permiten más paciencia.
+
+Penalización por Quiebra (Bankruptcy Penalty)
+- Valor predeterminado: -1.0
+- Rango recomendado: -5.0 - -0.5
+- Función: Penalización severa si el balance cae a cero.
+- Impacto: Valores más negativos promueven estrategias más conservadoras.
+
+GESTIÓN DE RIESGO
+---------------
+
+Factor de Drawdown (Drawdown Factor)
+- Valor predeterminado: 0.2
+- Rango recomendado: 0 - 0.5
+- Función: Penalización proporcional al drawdown actual.
+- Impacto: Valores más altos favorecen estrategias con menor volatilidad.
+
+Bonificación por Win Rate (Win Rate Bonus)
+- Valor predeterminado: 0.0005
+- Rango recomendado: 0 - 0.01
+- Función: Recompensa adicional por mantener un alto ratio de operaciones exitosas.
+- Impacto: Incrementar este valor fomenta estrategias más conservadoras con mayor precisión.
+
+Normalización de Recompensas (Normalize Rewards)
+- Opciones: Activado/Desactivado
+- Función: Normaliza las recompensas relativas al balance inicial.
+- Impacto: Mejora la estabilidad del entrenamiento para estrategias a largo plazo.
+
+Bonificación por Eficiencia de Capital (Capital Efficiency Bonus)
+- Valor predeterminado: 0.0
+- Rango recomendado: 0 - 0.0005
+- Función: Pequeña bonificación por mantener capital empleado en el mercado.
+- Impacto: Fomenta posiciones activas en lugar de efectivo inactivo.
+
+Factor de Descuento Temporal (Time Decay Factor)
+- Valor predeterminado: 0.0
+- Rango recomendado: 0 - 0.001
+- Función: Descuenta recompensas para operaciones más largas.
+- Impacto: Valores más altos favorecen operaciones rápidas; valores bajos permiten posiciones más largas.
+
+PARÁMETROS DE TRADING
+------------------
+
+Stop Loss Porcentual
+- Valor predeterminado: 0.02 (2%)
+- Rango recomendado: 0.005 - 0.05
+- Función: Porcentaje de pérdida máxima antes de cerrar automáticamente una posición.
+- Impacto: Valores más bajos ofrecen mayor protección pero pueden resultar en más operaciones cortadas prematuramente.
+
+Take Profit Porcentual
+- Valor predeterminado: 0.04 (4%)
+- Rango recomendado: 0.01 - 0.1
+- Función: Porcentaje de ganancia para cerrar automáticamente una posición.
+- Impacto: Valores más altos permiten que las ganancias corran más.
+
+CONSEJOS PARA EQUILIBRAR EL SISTEMA
+--------------------------------
+
+- Coherencia de Escalas: Asegure que las recompensas por operaciones exitosas superen significativamente la penalización por inactividad acumulada durante el tiempo típico necesario para completar una operación rentable.
+
+- Ratio Riesgo-Recompensa: Mantenga una proporción sana entre take profit y stop loss (recomendado ≥ 1.5) para promover estrategias sostenibles.
+
+- Gestión de Drawdown: Un factor de drawdown bien equilibrado (0.1-0.3) promueve la preservación de capital sin inhibir excesivamente la toma de riesgos.
+
+- Equilibrio Actividad/Paciencia: Ajuste la penalización por inactividad según el horizonte temporal de su estrategia: más negativa para trading más activo, menos negativa para estrategias de posición.
+
+PRESETS RECOMENDADOS
+-----------------
+
+1. Trading de Alta Frecuencia
+- Penalización por inactividad: -0.0003
+- Factor de escalado: 0.05
+- Factor temporal: 0.001
+- Stop loss: 1%
+- Take profit: 2%
+
+2. Trading de Posición
+- Penalización por inactividad: -0.00005
+- Factor de drawdown: 0.2
+- Win rate bonus: 0.005
+- Stop loss: 3%
+- Take profit: 6%
+
+3. Trading de Tendencia
+- Factor de escalado: 0.02
+- Stop loss: 3%
+- Take profit: 9%
+- Normalización de recompensas: Activado

@@ -12,8 +12,7 @@ build/
 logs/*.log
 
 # Models (excepto los que queramos incluir explícitamente)
-models/
-output/
+
 
 # Archivos temporales
 .vscode/

@@ -145,3 +145,92 @@
 2025-03-01 04:45:22,616 - INFO - New best model saved with reward: -0.57
 2025-03-01 11:03:18,924 - INFO - Módulos de trading inicializados correctamente
 2025-03-01 11:45:29,680 - INFO - Módulos de trading inicializados correctamente
+2025-03-01 11:54:15,225 - INFO - Módulos de trading inicializados correctamente
+2025-03-01 11:54:56,588 - INFO - Módulos de trading inicializados correctamente
+2025-03-01 11:56:13,034 - INFO - Conectando a NinjaTrader en 127.0.0.1:5000...
+2025-03-01 11:56:13,034 - INFO - NinjaTrader interface initialized (IP: 127.0.0.1, Data Port: 5000, Order Port: 5001)
+2025-03-01 11:56:13,050 - INFO - Data receiver listening on 127.0.0.1:5000
+2025-03-01 11:56:13,050 - INFO - NinjaTrader interface started
+2025-03-01 11:56:13,050 - INFO - Conexión exitosa con NinjaTrader en 127.0.0.1:5000
+2025-03-01 11:56:17,583 - INFO - Datos recientes ya existentes: data\extracted_data_20250301_044323.csv
+2025-03-01 11:56:17,594 - INFO - Datos históricos extraídos correctamente: data\extracted_data_20250301_044323.csv
+2025-03-01 11:56:29,140 - INFO - Data receiver stopped
+2025-03-01 11:56:29,140 - INFO - NinjaTrader interface stopped
+2025-03-01 11:56:29,140 - INFO - Conectando a NinjaTrader en 127.0.0.1:5000...
+2025-03-01 11:56:29,140 - INFO - NinjaTrader interface initialized (IP: 127.0.0.1, Data Port: 5000, Order Port: 5001)
+2025-03-01 11:56:29,140 - INFO - Data receiver listening on 127.0.0.1:5000
+2025-03-01 11:56:29,140 - INFO - NinjaTrader interface started
+2025-03-01 11:56:29,140 - INFO - Conexión exitosa con NinjaTrader en 127.0.0.1:5000
+2025-03-01 11:57:43,673 - INFO - Datos recientes ya existentes: data\extracted_data_20250301_044323.csv
+2025-03-01 11:57:43,685 - INFO - Datos históricos extraídos correctamente: data\extracted_data_20250301_044323.csv
+2025-03-01 12:27:04,892 - INFO - Módulos de trading inicializados correctamente
+2025-03-01 12:29:44,321 - INFO - Módulos de trading inicializados correctamente
+2025-03-01 12:30:04,925 - INFO - Conectando a NinjaTrader en 127.0.0.1:5000...
+2025-03-01 12:30:04,929 - INFO - NinjaTrader interface initialized (IP: 127.0.0.1, Data Port: 5000, Order Port: 5001)
+2025-03-01 12:30:04,929 - INFO - Data receiver listening on 127.0.0.1:5000
+2025-03-01 12:30:04,929 - INFO - NinjaTrader interface started
+2025-03-01 12:30:04,929 - INFO - Conexión exitosa con NinjaTrader en 127.0.0.1:5000
+2025-03-01 12:30:08,549 - INFO - Desconectando de NinjaTrader...
+2025-03-01 12:30:08,942 - INFO - Data receiver stopped
+2025-03-01 12:30:08,943 - INFO - NinjaTrader interface stopped
+2025-03-01 12:30:08,943 - INFO - Desconexión exitosa de NinjaTrader
+2025-03-01 12:30:15,183 - INFO - Conectando a NinjaTrader en 127.0.0.1:5000...
+2025-03-01 12:30:15,183 - INFO - NinjaTrader interface initialized (IP: 127.0.0.1, Data Port: 5000, Order Port: 5001)
+2025-03-01 12:30:15,183 - INFO - Data receiver listening on 127.0.0.1:5000
+2025-03-01 12:30:15,183 - INFO - NinjaTrader interface started
+2025-03-01 12:30:15,183 - INFO - Conexión exitosa con NinjaTrader en 127.0.0.1:5000
+2025-03-01 12:30:17,135 - INFO - Datos recientes ya existentes: data\extracted_data_20250301_044323.csv
+2025-03-01 12:30:17,146 - INFO - Datos históricos extraídos correctamente: data\extracted_data_20250301_044323.csv
+2025-03-01 12:30:32,487 - INFO - Iniciando proceso en modo: train
+2025-03-01 12:30:32,487 - INFO - Iniciando entrenamiento...
+2025-03-01 12:30:32,505 - INFO - Usando datos extraídos: data\extracted_data_20250301_044323.csv
+2025-03-01 12:30:32,552 - INFO - Prepared data with 22800 training bars and 5700 testing bars
+2025-03-01 12:30:32,552 - INFO - Datos cargados: 22800 registros de entrenamiento, 5700 de prueba
+2025-03-01 12:30:32,552 - INFO - Starting training with algorithm: PPO
+2025-03-01 12:30:32,552 - INFO - Training parameters: {'algo': 'PPO', 'policy': 'MlpPolicy', 'learning_rate': 0.0003, 'batch_size': 64, 'n_steps': 2048, 'total_timesteps': 500000, 'device': 'auto'}
+2025-03-01 12:30:32,552 - INFO - Environment parameters: {'initial_balance': 100000.0, 'commission': 0.0001, 'slippage': 0.0001, 'window_size': 10, 'reward_scaling': 0.01, 'position_size': 0.1, 'stop_loss_pct': 0.02, 'take_profit_pct': 0.04}
+2025-03-01 12:30:32,658 - INFO - Using device: cuda
+2025-03-01 12:30:48,296 - INFO - Training step: 5000
+2025-03-01 12:30:48,296 - INFO - Mean reward: nan, Mean episode length: nan
+2025-03-01 12:31:02,120 - INFO - Training step: 10000
+2025-03-01 12:31:02,120 - INFO - Mean reward: nan, Mean episode length: nan
+2025-03-01 12:31:19,936 - INFO - Eval num_timesteps=10000, episode_reward=1.55
+2025-03-01 12:31:19,969 - INFO - New best model saved with reward: 1.55
+2025-03-01 12:31:35,058 - INFO - Training step: 15000
+2025-03-01 12:31:35,058 - INFO - Mean reward: nan, Mean episode length: nan
+2025-03-01 12:31:50,471 - INFO - Training step: 20000
+2025-03-01 12:31:50,471 - INFO - Mean reward: nan, Mean episode length: nan
+2025-03-01 12:32:08,619 - INFO - Eval num_timesteps=20000, episode_reward=2.64
+2025-03-01 12:32:08,630 - INFO - New best model saved with reward: 2.64
+2025-03-01 12:32:23,928 - INFO - Training step: 25000
+2025-03-01 12:32:23,928 - INFO - Mean reward: -0.43, Mean episode length: 22790.00
+2025-03-01 12:32:23,949 - INFO - New best model saved with reward: -0.43
+2025-03-01 12:32:39,533 - INFO - Training step: 30000
+2025-03-01 12:32:39,533 - INFO - Mean reward: -0.43, Mean episode length: 22790.00
+2025-03-01 12:33:04,541 - INFO - Eval num_timesteps=30000, episode_reward=-0.57
+2025-03-01 12:33:22,916 - INFO - Training step: 35000
+2025-03-01 12:33:22,916 - INFO - Mean reward: -0.43, Mean episode length: 22790.00
+2025-03-01 12:33:38,931 - INFO - Training step: 40000
+2025-03-01 12:33:38,931 - INFO - Mean reward: -0.43, Mean episode length: 22790.00
+2025-03-01 12:33:57,678 - INFO - Eval num_timesteps=40000, episode_reward=-0.57
+2025-03-01 12:34:11,982 - INFO - Training step: 45000
+2025-03-01 12:34:11,983 - INFO - Mean reward: -0.43, Mean episode length: 22790.00
+2025-03-01 12:34:28,918 - INFO - Training step: 50000
+2025-03-01 12:34:28,918 - INFO - Mean reward: -0.22, Mean episode length: 22790.00
+2025-03-01 12:34:28,929 - INFO - New best model saved with reward: -0.22
+2025-03-01 12:34:48,399 - INFO - Eval num_timesteps=50000, episode_reward=-0.57
+2025-03-01 12:35:04,659 - INFO - Training step: 55000
+2025-03-01 12:35:04,660 - INFO - Mean reward: -0.22, Mean episode length: 22790.00
+2025-03-01 12:35:22,538 - INFO - Training step: 60000
+2025-03-01 12:35:22,539 - INFO - Mean reward: -0.22, Mean episode length: 22790.00
+2025-03-01 12:35:40,349 - INFO - Eval num_timesteps=60000, episode_reward=-0.57
+2025-03-01 12:35:55,942 - INFO - Training step: 65000
+2025-03-01 12:35:55,942 - INFO - Mean reward: -0.22, Mean episode length: 22790.00
+2025-03-01 12:36:13,690 - INFO - Training step: 70000
+2025-03-01 12:36:13,691 - INFO - Mean reward: -0.10, Mean episode length: 22790.00
+2025-03-01 12:36:13,703 - INFO - New best model saved with reward: -0.10
+2025-03-01 12:36:32,717 - INFO - Eval num_timesteps=70000, episode_reward=1.45
+2025-03-01 12:36:50,756 - INFO - Training step: 75000
+2025-03-01 12:36:50,756 - INFO - Mean reward: -0.10, Mean episode length: 22790.00
+2025-03-01 12:37:10,427 - INFO - Training step: 80000
+2025-03-01 12:37:10,427 - INFO - Mean reward: -0.10, Mean episode length: 22790.00

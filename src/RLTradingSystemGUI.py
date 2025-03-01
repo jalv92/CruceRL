@@ -878,12 +878,13 @@ class LogPanel(BasePanel):
 # Panel de control
 # ---------------------------------------------------------------------
 class ControlPanel(BasePanel):
-    def __init__(self, parent, on_start, on_pause, on_stop, on_connect, on_train_config, on_extract_data):
+    def __init__(self, parent, on_start, on_pause, on_stop, on_connect, on_disconnect, on_train_config, on_extract_data):
         super().__init__(parent, title="Control Panel")
         self.on_start = on_start
         self.on_pause = on_pause
         self.on_stop = on_stop
         self.on_connect = on_connect
+        self.on_disconnect = on_disconnect
         self.on_train_config = on_train_config
         self.on_extract_data = on_extract_data
         self.paused = False
@@ -929,8 +930,12 @@ class ControlPanel(BasePanel):
         )
         data_port_entry.pack(side=tk.LEFT, padx=(0,10), pady=5)
 
+        # Frame para botones de conexión
+        conn_buttons_frame = tk.Frame(server_frame, bg=COLORS['bg_dark'])
+        conn_buttons_frame.pack(side=tk.LEFT, padx=(5,0), pady=5)
+        
         self.connect_button = tk.Button(
-            server_frame, text="Connect",
+            conn_buttons_frame, text="Connect",
             command=self._on_connect_click,
             bg=COLORS['accent'], fg=COLORS['fg_white'],
             activebackground=COLORS['accent_hover'],
@@ -938,7 +943,20 @@ class ControlPanel(BasePanel):
             font=('Segoe UI', 10),
             relief=tk.FLAT, bd=0, padx=10
         )
-        self.connect_button.pack(side=tk.LEFT, padx=(0,0), pady=5)
+        self.connect_button.pack(side=tk.LEFT, padx=(0,5), pady=5)
+        
+        # Nuevo botón de desconexión
+        self.disconnect_button = tk.Button(
+            conn_buttons_frame, text="Disconnect",
+            command=self._on_disconnect_click,
+            bg=COLORS['red'], fg=COLORS['fg_white'],
+            activebackground='#ff6b68',
+            activeforeground=COLORS['fg_white'],
+            font=('Segoe UI', 10),
+            relief=tk.FLAT, bd=0, padx=10,
+            state='disabled'  # Inicialmente deshabilitado
+        )
+        self.disconnect_button.pack(side=tk.LEFT, padx=(0,10), pady=5)
 
         # Nuevo botón para extraer datos
         self.extract_data_button = tk.Button(
@@ -1090,8 +1108,9 @@ class ControlPanel(BasePanel):
         except ValueError:
             messagebox.showerror("Invalid Port", "Data port must be a valid number.")
             return
-        # Corregir esta línea para pasar los argumentos
-        self.on_connect(ip, data_port)  # Añadir los parámetros ip y data_port
+        self.on_connect(ip, data_port)
+        self.connect_button.configure(state='disabled')
+        self.disconnect_button.configure(state='normal')
     
     def _on_train_config_click(self):
         self.on_train_config()
@@ -1156,6 +1175,13 @@ class ControlPanel(BasePanel):
 
             # Luego llamamos a on_switch_toggle para registrar en logs, etc.
             self.on_switch_toggle()
+
+    def _on_disconnect_click(self):
+        """Desconectar de NinjaTrader"""
+        if hasattr(self, 'on_disconnect') and self.on_disconnect:
+            self.on_disconnect()
+            self.connect_button.configure(state='normal')
+            self.disconnect_button.configure(state='disabled')
 
     def update_progress(self, value):
         self.progress_value = value
@@ -1230,11 +1256,12 @@ class HelpDialog(tk.Toplevel):
             return f"Error loading help file: {e}"
     
     def setup_ui(self):
-        main_frame = tk.Frame(self, bg=COLORS['bg_very_dark'])
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Frame principal
+        self.main_frame = tk.Frame(self, bg=COLORS['bg_very_dark'])
+        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         title_label = tk.Label(
-            main_frame,
+            self.main_frame,
             text="RL Trading System Help",
             bg=COLORS['bg_very_dark'],
             fg=COLORS['accent'],
@@ -1256,7 +1283,7 @@ class HelpDialog(tk.Toplevel):
         
         # Si se proporcionó un texto de ayuda específico, usarlo
         if self.help_text:
-            help_frame = tk.Frame(main_frame, bg=COLORS['bg_dark'])
+            help_frame = tk.Frame(self.main_frame, bg=COLORS['bg_dark'])
             help_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
             
             help_text_widget = scrolledtext.ScrolledText(help_frame, **text_config)
@@ -1265,7 +1292,7 @@ class HelpDialog(tk.Toplevel):
             help_text_widget.configure(state='disabled')
         else:
             # Crear notebook para pestañas de ayuda
-            help_notebook = ttk.Notebook(main_frame)
+            help_notebook = ttk.Notebook(self.main_frame)
             help_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
             
             # Pestaña 1: Interfaz General
@@ -1305,7 +1332,7 @@ class HelpDialog(tk.Toplevel):
             help_notebook.add(trading_frame, text="Trading")
 
         close_button = tk.Button(
-            main_frame,
+            self.main_frame,
             text="Close",
             command=self.destroy,
             bg=COLORS['bg_medium'],

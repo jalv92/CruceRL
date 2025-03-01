@@ -239,6 +239,16 @@ class MainApplication(tk.Frame):
         # Configurar la interfaz
         self.setup_ui()
     
+    def toggle_pause(self, paused):
+        """Pausa o reanuda el proceso actual"""
+        self.paused = paused
+        logger.info(f"Proceso {'pausado' if paused else 'reanudado'}")
+        
+        # Si estamos en modo de entrenamiento, podría necesitar lógica adicional
+        if hasattr(self, 'training_manager') and self.training_manager:
+            # Aquí podría ir lógica específica para pausar el entrenamiento
+            pass
+        
     def initialize_objects(self):
         """Inicializar objetos del sistema"""
         if MODULES_AVAILABLE:
@@ -304,6 +314,7 @@ class MainApplication(tk.Frame):
             on_pause=self.toggle_pause,
             on_stop=self.stop_process,
             on_connect=self.connect_to_ninjatrader,
+            on_disconnect=self.disconnect_from_ninjatrader,
             on_train_config=self.show_training_config,
             on_extract_data=self.extract_data_from_ninjatrader
         )
@@ -329,7 +340,7 @@ class MainApplication(tk.Frame):
         # Mostrar ventana de progreso
         progress_window = tk.Toplevel(self.parent)
         progress_window.title("Extrayendo Datos")
-        progress_window.geometry("400x150")
+        progress_window.geometry("400x180")  # Aumentado para acomodar mejor el botón
         progress_window.resizable(False, False)
         progress_window.transient(self.parent)
         progress_window.grab_set()
@@ -368,19 +379,23 @@ class MainApplication(tk.Frame):
             fg=COLORS['fg_white'],
             bg=COLORS['bg_dark']
         )
-        progress_label.pack()
+        progress_label.pack(pady=(0, 10))
         
-        # Botón de cancelar
+        # Botón de cancelar - MEJORADO
         cancel_button = tk.Button(
             frame,
             text="Cancelar",
             command=lambda: self.cancel_extraction(progress_window),
             bg=COLORS['red'],
             fg=COLORS['fg_white'],
-            font=('Segoe UI', 10),
-            padx=10
+            font=('Segoe UI', 10, 'bold'),
+            relief=tk.FLAT,
+            bd=0,
+            padx=20,
+            pady=8,
+            width=15  # Ancho fijo para mejor visibilidad
         )
-        cancel_button.pack(pady=(10, 0))
+        cancel_button.pack(pady=(5, 0))
         
         # Callback para actualizar progreso
         def update_extraction_progress(current, total, percent, filename=None):
@@ -513,6 +528,23 @@ class MainApplication(tk.Frame):
             logger.error(f"Error en conexión: {e}")
             self.stats_panel.update_connection(False)
             messagebox.showerror("Error de Conexión", f"No se pudo conectar a NinjaTrader: {e}")
+            
+    def disconnect_from_ninjatrader(self):
+        """Desconecta de NinjaTrader"""
+        try:
+            if self.nt_interface:
+                logger.info("Desconectando de NinjaTrader...")
+                self.nt_interface.stop()
+                self.nt_interface = None
+                self.connected = False
+                self.stats_panel.update_connection(False)
+                logger.info("Desconexión exitosa de NinjaTrader")
+                messagebox.showinfo("Desconexión", "Desconectado de NinjaTrader")
+            else:
+                logger.warning("No hay conexión activa con NinjaTrader")
+        except Exception as e:
+            logger.error(f"Error al desconectar: {e}")
+            messagebox.showerror("Error de Desconexión", f"Error al desconectar de NinjaTrader: {e}")
             
     def setup_menu(self):
         """Configura el menú de la aplicación"""

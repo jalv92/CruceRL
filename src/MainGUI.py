@@ -18,8 +18,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from src.RLTradingSystemGUI import (
         COLORS, BasePanel, StatsPanel, TradesPanel, ChartPanel, 
-        TrainingConfigPanel, ControlPanel, LogPanel, HelpDialog
+        ControlPanel, LogPanel, HelpDialog
     )
+    from src.training_config import TrainingConfigPanel
     from src.TrainingManager import DataLoader, TrainingManager
     from src.RLTradingAgent import NinjaTraderInterface, RLAgent, MarketData
     from src.TradingEnvironment import TradingEnvironment

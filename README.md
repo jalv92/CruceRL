@@ -32,10 +32,35 @@ python run_trading_system.py backtest --model path/to/model.zip --data path/to/d
 python run_trading_system.py run --model path/to/model.zip
 ```
 
-## Integración con NinjaTrader 8
-1. Importar `integrations/RLTrading.cs` en NinjaTrader 8
-2. Configurar la estrategia en un gráfico
-3. Iniciar el sistema en modo servidor
+## Nueva Integración con NinjaTrader 8
+
+### Extracción de Datos
+1. Importar `integrations/RLDataExtractor.cs` en NinjaTrader 8
+2. Compilar el indicador
+3. Añadir el indicador a un gráfico
+4. El indicador extraerá automáticamente los datos del gráfico y los guardará en un archivo CSV en la carpeta `data/`
+5. Formato del archivo: `{instrumento}_{timestamp}.csv`
+
+### Ejecución de Trading
+1. Importar `integrations/RLTradeServer.cs` en NinjaTrader 8
+2. Compilar la estrategia
+3. Añadir la estrategia a un gráfico
+4. Activar la estrategia para iniciar el servidor
+5. Conectar la aplicación Python al servidor
+6. Los datos de mercado se enviarán a Python y las señales de trading se recibirán en NinjaTrader
+
+## Flujo de Comunicación
+1. El indicador `RLDataExtractor` guarda los datos históricos del gráfico incluyendo:
+   - Precio (OHLC)
+   - Indicadores técnicos (EMA, ATR, ADX)
+   - Marca de tiempo
+
+2. La estrategia `RLTradeServer` establece un servidor TCP/IP en NinjaTrader
+3. La aplicación Python se conecta a este servidor
+4. La comunicación utiliza un protocolo de texto simple:
+   - Datos de Mercado: `instrumento,open,high,low,close,ema_short,ema_long,atr,adx,timestamp,date_value`
+   - Señales de Trading: `signal,ema_choice,position_size,stop_loss,take_profit`
+   - Ejecución de Operaciones: `TRADE_EXECUTED:action,entry_price,exit_price,pnl,quantity`
 
 ## Parámetros personalizables
 Consulta la documentación en la carpeta `doc/` para conocer todos los parámetros disponibles.

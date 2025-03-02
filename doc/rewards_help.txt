@@ -2,6 +2,21 @@ Sistema de Recompensas en Aprendizaje por Refuerzo para Trading
 
 El sistema de recompensas es el mecanismo fundamental que guía al agente de RL para desarrollar estrategias de trading efectivas. Un sistema bien equilibrado incentiva tanto la búsqueda de ganancias como la gestión prudente del riesgo.
 
+INTEGRACIÓN CON NINJATRADER 8
+-----------------------------
+
+Con el nuevo sistema de integración, las operaciones de trading se ejecutan directamente en NinjaTrader 8:
+
+1. El indicador RLDataExtractor extrae los datos históricos para entrenamiento
+2. La estrategia RLTradeServer ejecuta las señales de trading
+3. El sistema de recompensas guía al modelo RL para generar señales óptimas
+
+Las señales de trading incluyen:
+- Dirección (1=long, 0=flat, -1=short)
+- Tamaño de posición (factor multiplicador del tamaño base)
+- Stop Loss dinámico (basado en ATR para adaptarse a la volatilidad)
+- Take Profit dinámico (también basado en ATR)
+
 PARÁMETROS BÁSICOS
 -----------------
 

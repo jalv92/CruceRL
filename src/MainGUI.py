@@ -334,8 +334,7 @@ class MainApplication(tk.Frame):
             on_stop=self.stop_process,
             on_connect=self.connect_to_ninjatrader,
             on_disconnect=self.disconnect_from_ninjatrader,
-            on_train_config=self.show_training_config,
-            on_extract_data=self.extract_data_from_ninjatrader
+            on_train_config=self.show_training_config
         )
         # Extender la funcionalidad para manejar el toggle de autotrading
         self.control_panel.on_switch_toggle = self.toggle_auto_trading
@@ -352,189 +351,8 @@ class MainApplication(tk.Frame):
         # Inicializar datos de simulación
         self.initialize_simulation()
         
-    def extract_data_from_ninjatrader(self, bars_to_extract=5000):
-        """Extrae datos históricos de NinjaTrader"""
-        if not self.connected:
-            messagebox.showwarning("No conectado", "Debe conectarse a NinjaTrader primero")
-            return
-            
-        # Validar que sea un número positivo razonable
-        try:
-            bars_to_extract = int(bars_to_extract)
-            if bars_to_extract <= 0:
-                bars_to_extract = 5000  # Valor predeterminado si es inválido
-        except (ValueError, TypeError):
-            bars_to_extract = 5000  # Valor predeterminado si hay error
-        
-        # Mostrar ventana de progreso
-        progress_window = tk.Toplevel(self.parent)
-        progress_window.title("Extrayendo Datos")
-        progress_window.geometry("400x180")  # Aumentado para acomodar mejor el botón
-        progress_window.resizable(False, False)
-        progress_window.transient(self.parent)
-        progress_window.grab_set()
-        
-        # Configurar contenido de la ventana
-        frame = tk.Frame(progress_window, bg=COLORS['bg_dark'], padx=20, pady=20)
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Etiqueta de mensaje
-        message_label = tk.Label(
-            frame, 
-            text="Extrayendo datos históricos de NinjaTrader...",
-            font=('Segoe UI', 12),
-            fg=COLORS['fg_white'],
-            bg=COLORS['bg_dark']
-        )
-        message_label.pack(pady=(0, 10))
-        
-        # Barra de progreso
-        progress_var = tk.DoubleVar()
-        progress_bar = ttk.Progressbar(
-            frame, 
-            variable=progress_var,
-            maximum=100.0,
-            mode='determinate',
-            length=360
-        )
-        progress_bar.pack(pady=(0, 10))
-        
-        # Etiqueta de progreso
-        progress_text = tk.StringVar(value="0%")
-        progress_label = tk.Label(
-            frame,
-            textvariable=progress_text,
-            font=('Segoe UI', 10),
-            fg=COLORS['fg_white'],
-            bg=COLORS['bg_dark']
-        )
-        progress_label.pack(pady=(0, 10))
-        
-        # Botón de cancelar - MEJORADO
-        cancel_button = tk.Button(
-            frame,
-            text="Cancelar",
-            command=lambda: self.cancel_extraction(progress_window),
-            bg=COLORS['red'],
-            fg=COLORS['fg_white'],
-            font=('Segoe UI', 10, 'bold'),
-            relief=tk.FLAT,
-            bd=0,
-            padx=20,
-            pady=8,
-            width=15  # Ancho fijo para mejor visibilidad
-        )
-        cancel_button.pack(pady=(5, 0))
-        
-        # Callback para actualizar progreso
-        def update_extraction_progress(current, total, percent=None, filename=None, instrument_name=None):
-            # Asegurar que percent se calcule si no se proporciona
-            if percent is None and total > 0:
-                percent = (current / total) * 100.0
-                
-            if filename:
-                # Extracción completa
-                progress_var.set(100.0)
-                progress_text.set("100% - Completado")
-                message_label.config(text=f"Datos extraídos correctamente:")
-                
-                # Añadir etiqueta para mostrar el archivo
-                file_label = tk.Label(
-                    frame,
-                    text=f"Guardado en: {filename}",
-                    font=('Segoe UI', 9),
-                    fg=COLORS['accent'],
-                    bg=COLORS['bg_dark']
-                )
-                file_label.pack(pady=(5, 0))
-                
-                # Cambiar a botón cerrar
-                cancel_button.config(
-                    text="Cerrar",
-                    command=progress_window.destroy,
-                    bg=COLORS['bg_medium']
-                )                
-                # Mostrar mensaje en log
-                logger.info(f"Datos históricos extraídos correctamente: {filename}")
-            else:
-                # Actualizar progreso
-                progress_var.set(percent)
-                progress_text.set(f"{percent:.1f}% ({current}/{total})")
-                logger.info(f"Progreso de extracción: {percent:.1f}% ({current}/{total})")
-        
-        # Actualizar UI
-        progress_window.update()
-        
-        # Iniciar proceso de extracción
-        def extraction_thread():
-            try:
-                # Pasar el parámetro de barras a extraer
-                self.nt_interface.request_historical_data(
-                    callback=update_extraction_progress,
-                    bars_count=bars_to_extract
-                )
-                
-                # Esperar a que inicie la extracción (puede tomar un momento)
-                wait_time = 0
-                max_wait = 5  # 5 segundos máximo de espera
-                while not self.nt_interface.is_extracting_data and wait_time < max_wait:
-                    time.sleep(0.5)
-                    wait_time += 0.5
-                
-                # Esperar a que se complete la extracción
-                # Usamos un timeout para evitar quedarnos atascados indefinidamente
-                timeout = time.time() + 300  # 5 minutos de timeout máximo
-                while self.nt_interface.is_extracting_data and time.time() < timeout:
-                    time.sleep(0.5)
-                    
-                # Si alcanzamos el timeout, cancelamos la extracción
-                if self.nt_interface.is_extracting_data and time.time() >= timeout:
-                    logger.error("Timeout alcanzado esperando la extracción de datos")
-                    self.nt_interface.is_extracting_data = False
-                    self.nt_interface.cancel_extraction()
-                
-                # Si la ventana fue cerrada, asegurarse de que no intentemos actualizar
-                if not progress_window.winfo_exists():
-                    return
-                
-                # Verificar si se completó correctamente
-                if not self.nt_interface.extraction_complete:
-                    message_label.config(text="Error al extraer datos")
-                    progress_text.set("Error")
-                    
-                    # Cambiar a botón cerrar
-                    cancel_button.config(
-                        text="Cerrar",
-                        command=progress_window.destroy,
-                        bg=COLORS['bg_medium']
-                    )            
-            except Exception as e:
-                logger.error(f"Error en extracción de datos: {e}")
-                
-                # Si la ventana fue cerrada, asegurarse de que no intentemos actualizar
-                if not progress_window.winfo_exists():
-                    return
-                
-                message_label.config(text=f"Error: {str(e)}")
-                progress_text.set("Error")
-                
-                # Cambiar a botón cerrar
-                cancel_button.config(
-                    text="Cerrar",
-                    command=progress_window.destroy,
-                    bg=COLORS['bg_medium']
-                )        
-        # Iniciar extracción en un hilo separado
-        extraction_thread = threading.Thread(target=extraction_thread)
-        extraction_thread.daemon = True
-        extraction_thread.start()
-
-    # Método nuevo para cancelar la extracción
-    def cancel_extraction(self, progress_window):
-        """Cancela la extracción de datos"""
-        if self.nt_interface:
-            self.nt_interface.cancel_extraction()
-        progress_window.destroy()
+    # The extract_data_from_ninjatrader method and cancel_extraction method
+    # have been removed as data extraction is now handled by the NinjaTrader indicator
             
     def stop_process(self):
         """Detiene el proceso actual"""
@@ -861,21 +679,21 @@ class MainApplication(tk.Frame):
     
     def start_training(self):
         """Inicia el entrenamiento de un modelo"""
-        # Verificar si hay datos extraídos
+        # Verificar si hay archivos de datos
         data_dir = "data"
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
             
-        extracted_files = [f for f in os.listdir(data_dir) if f.startswith("extracted_data_") and f.endswith(".csv")]
+        data_files = [f for f in os.listdir(data_dir) if f.endswith(".csv")]
         
-        if not extracted_files:
-            messagebox.showerror("No Data Available", "No extracted data found. Please extract data from NinjaTrader first.")
+        if not data_files:
+            messagebox.showerror("No Data Available", "No data files found. Please use the RLDataExtractor indicator in NinjaTrader to export data first.")
             self.running = False
             return
         
         # Ordenar por fecha (más reciente primero)
-        extracted_files.sort(reverse=True)
-        latest_data_file = os.path.join(data_dir, extracted_files[0])
+        data_files.sort(reverse=True)
+        latest_data_file = os.path.join(data_dir, data_files[0])
         
         # Obtener parámetros
         params = self.train_config_panel.get_training_params()
@@ -959,18 +777,18 @@ class MainApplication(tk.Frame):
     
     def start_backtesting(self, csv_path=None):
         """Inicia el backtesting de un modelo"""
-        # Si no se proporciona ruta de CSV, usar los datos extraídos más recientes
+        # Si no se proporciona ruta de CSV, usar los datos más recientes
         if not csv_path:
             data_dir = "data"
-            extracted_files = [f for f in os.listdir(data_dir) if f.startswith("extracted_data_") and f.endswith(".csv")]
+            data_files = [f for f in os.listdir(data_dir) if f.endswith(".csv")]
             
-            if not extracted_files:
-                messagebox.showerror("No Data Available", "No extracted data found. Please extract data from NinjaTrader first.")
+            if not data_files:
+                messagebox.showerror("No Data Available", "No data files found. Please use the RLDataExtractor indicator in NinjaTrader to export data first.")
                 self.running = False
                 return
             
             # Verificar si debemos pedir al usuario seleccionar un archivo CSV
-            should_select_file = len(extracted_files) > 1
+            should_select_file = len(data_files) > 1
             
             if should_select_file:
                 file_path = filedialog.askopenfilename(
@@ -984,8 +802,8 @@ class MainApplication(tk.Frame):
                 csv_path = file_path
             else:
                 # Ordenar por fecha (más reciente primero)
-                extracted_files.sort(reverse=True)
-                csv_path = os.path.join(data_dir, extracted_files[0])
+                data_files.sort(reverse=True)
+                csv_path = os.path.join(data_dir, data_files[0])
         
         # Obtener modelo
         model_path = filedialog.askopenfilename(

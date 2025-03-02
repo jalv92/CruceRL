@@ -242,18 +242,39 @@ class DataLoader:
     
     def load_csv_data(self, file_path):
         """Load data from a CSV file"""
-        df = pd.read_csv(file_path, parse_dates=True, infer_datetime_format=True)
+        # Load CSV with lowercase column names to ensure compatibility
+        df = pd.read_csv(file_path, parse_dates=True)
+        
+        # Convert all column names to lowercase for consistency
+        df.columns = [col.lower() for col in df.columns]
+        
+        # Log the available columns for debugging
+        logging.debug(f"CSV columns: {list(df.columns)}")
         
         # Identify timestamp column
         timestamp_col = None
         for col in df.columns:
-            if 'time' in col.lower() or 'date' in col.lower():
+            if 'time' in col.lower() or 'date' in col.lower() and 'value' not in col.lower():
                 timestamp_col = col
                 break
         
         if timestamp_col:
             df[timestamp_col] = pd.to_datetime(df[timestamp_col])
             df.set_index(timestamp_col, inplace=True)
+        else:
+            logging.warning("No timestamp column found in CSV. Using row index instead.")
+        
+        # Make sure we have all required columns
+        required_columns = ['open', 'high', 'low', 'close']
+        for col in required_columns:
+            if col not in df.columns:
+                # Try to find a column with case differences
+                case_variants = [c for c in df.columns if c.lower() == col.lower()]
+                if case_variants:
+                    df[col] = df[case_variants[0]]
+                else:
+                    logging.error(f"Required column '{col}' not found in CSV.")
+                    raise ValueError(f"Required column '{col}' not found in CSV.")
         
         return df
     
@@ -262,18 +283,27 @@ class DataLoader:
         # Copy the dataframe to avoid modifying the original
         df = df.copy()
         
-        # Calculate EMAs
-        df['ema_short'] = df['close'].ewm(span=9, adjust=False).mean()
-        df['ema_long'] = df['close'].ewm(span=21, adjust=False).mean()
+        # Check if required indicators already exist in the data
+        calculate_ema_short = 'ema_short' not in df.columns
+        calculate_ema_long = 'ema_long' not in df.columns
+        calculate_atr = 'atr' not in df.columns
         
-        # Calculate ATR (Average True Range)
-        high_low = df['high'] - df['low']
-        high_close = np.abs(df['high'] - df['close'].shift())
-        low_close = np.abs(df['low'] - df['close'].shift())
+        # Calculate EMAs if needed
+        if calculate_ema_short:
+            df['ema_short'] = df['close'].ewm(span=9, adjust=False).mean()
         
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = np.max(ranges, axis=1)
-        df['atr'] = true_range.rolling(window=14).mean()
+        if calculate_ema_long:
+            df['ema_long'] = df['close'].ewm(span=21, adjust=False).mean()
+        
+        # Calculate ATR (Average True Range) if needed
+        if calculate_atr:
+            high_low = df['high'] - df['low']
+            high_close = np.abs(df['high'] - df['close'].shift())
+            low_close = np.abs(df['low'] - df['close'].shift())
+            
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = np.max(ranges, axis=1)
+            df['atr'] = true_range.rolling(window=14).mean()
         
         # Simple calculation for ADX (Directional Movement Index)
         # For simplicity, we'll use a very basic proxy for ADX

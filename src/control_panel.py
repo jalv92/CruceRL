@@ -5,7 +5,7 @@ from tkinter import ttk
 from src.RLTradingSystemGUI import COLORS, BasePanel
 
 class ControlPanel(BasePanel):
-    def __init__(self, parent, on_start, on_pause, on_stop, on_connect, on_disconnect, on_train_config, on_extract_data):
+    def __init__(self, parent, on_start, on_pause, on_stop, on_connect, on_disconnect, on_train_config):
         super().__init__(parent, title="Control Panel")
         self.on_start = on_start
         self.on_pause = on_pause
@@ -13,7 +13,6 @@ class ControlPanel(BasePanel):
         self.on_connect = on_connect
         self.on_disconnect = on_disconnect
         self.on_train_config = on_train_config
-        self.on_extract_data = on_extract_data
         self.paused = False
         self.progress_value = 0
         self.tooltip_windows = {}  # Para guardar referencias a las ventanas de tooltip
@@ -86,36 +85,9 @@ class ControlPanel(BasePanel):
         )
         self.disconnect_button.pack(side=tk.LEFT, padx=(0,10), pady=5)
 
-        # Campo para definir la cantidad de barras a extraer
-        tk.Label(
-            server_frame, text="Bars to Extract:",
-            bg=COLORS['bg_dark'], fg=COLORS['fg_light'],
-            font=('Segoe UI', 10)
-        ).pack(side=tk.LEFT, padx=(10,5), pady=5)
-        
-        self.bars_to_extract_var = tk.StringVar(value="5000")
-        self.bars_to_extract_entry = tk.Entry(
-            server_frame, textvariable=self.bars_to_extract_var,
-            bg=COLORS['bg_medium'], fg=COLORS['fg_white'],
-            insertbackground=COLORS['fg_white'], relief=tk.FLAT,
-            bd=0, width=6, highlightthickness=1,
-            highlightbackground=COLORS['border']
-        )
-        self.bars_to_extract_entry.pack(side=tk.LEFT, padx=(0,10), pady=5)
-        # Agregar tooltip para el campo
-        self._create_tooltip(self.bars_to_extract_entry, "Cantidad de barras históricas a extraer")
-        
-        # Nuevo botón para extraer datos
-        self.extract_data_button = tk.Button(
-            server_frame, text="Extract Data",
-            command=self._on_extract_data_click,
-            bg=COLORS['bg_medium'], fg=COLORS['fg_white'],
-            activebackground=COLORS['bg_light'],
-            activeforeground=COLORS['fg_white'],
-            font=('Segoe UI', 10),
-            relief=tk.FLAT, bd=0, padx=10
-        )
-        self.extract_data_button.pack(side=tk.LEFT, padx=(0,0), pady=5)
+        # Frame space for additional controls if needed
+        spacer_frame = tk.Frame(server_frame, bg=COLORS['bg_dark'], width=20)
+        spacer_frame.pack(side=tk.LEFT, padx=(10,10), pady=5)
 
         # Frame para el modo de operación
         mode_frame = tk.Frame(container, bg=COLORS['bg_dark'])
@@ -264,14 +236,7 @@ class ControlPanel(BasePanel):
     def _on_train_config_click(self):
         self.on_train_config()
     
-    def _on_extract_data_click(self):
-        try:
-            bars_to_extract = int(self.bars_to_extract_var.get())
-            self.on_extract_data(bars_to_extract)
-        except ValueError:
-            # Si el valor no es un número válido, usar el valor predeterminado
-            self.bars_to_extract_var.set("5000")
-            self.on_extract_data(5000)
+    # Extract data functionality has been removed
     
     def _on_mode_change(self, event=None):
         self._update_button_visibility()
@@ -279,14 +244,11 @@ class ControlPanel(BasePanel):
     def _update_button_visibility(self):
         mode = self.mode_var.get()
         
-        # Mostrar/ocultar botones según el modo
+        # Show/hide buttons based on mode
         if mode == "train" or mode == "backtest":
             self.train_config_button.config(state="normal")
-            self.extract_data_button.config(state="normal")
         else:
             self.train_config_button.config(state="disabled")
-            # Dejar el botón de extraer datos siempre disponible
-            self.extract_data_button.config(state="normal")
 
     def on_start_click(self):
         mode = self.mode_var.get()

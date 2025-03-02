@@ -235,9 +235,11 @@ class ControlPanel(BasePanel):
         except ValueError:
             messagebox.showerror("Invalid Port", "Data port must be a valid number.")
             return
-        self.on_connect(ip, data_port)
+        # Solo deshabilitamos el botón temporalmente mientras se intenta la conexión
+        # El estado final se configurará en MainGUI.check_connection_status
         self.connect_button.configure(state='disabled')
         self.disconnect_button.configure(state='normal')
+        self.on_connect(ip, data_port)
     
     def _on_train_config_click(self):
         self.on_train_config()
@@ -299,9 +301,9 @@ class ControlPanel(BasePanel):
             self.switch_var.set(True)
             self.switch_canvas.itemconfig(self.switch_bg, fill=COLORS['accent'])
             self.switch_canvas.coords(self.switch_handle, 22, 2, 38, 18)
-
-            # Luego llamamos a on_switch_toggle para registrar en logs, etc.
-            self.on_switch_toggle()
+            
+        # Notificar al callback de cambio de estado
+        self.on_switch_toggle()
 
     def _on_disconnect_click(self):
         """Desconectar de NinjaTrader"""

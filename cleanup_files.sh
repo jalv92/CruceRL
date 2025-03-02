@@ -1,4 +1,4 @@
-#\!/bin/bash
+#!/bin/bash
 
 # Script para eliminar archivos temporales y obsoletos
 
@@ -16,5 +16,20 @@ echo "- CreateSynteticDATA.py (funcionalidad duplicada en TrainingManager)"
 echo "- update_imports.py (script de utilidad temporal)"
 echo "- cleanup_temporary_files.py (este script ahora es obsoleto)"
 
+echo -e "\nTambién moverá los archivos de log de la raíz a la carpeta logs/"
+
 echo -e "\nUsage: ./cleanup_files.sh"
 echo "NOTE: Execute this script only when you are sure you don't need these files anymore."
+
+# Crear la carpeta logs si no existe
+mkdir -p logs
+
+# Mover archivos de log a la carpeta logs
+for log_file in rl_*.log; do
+    if [ -f "$log_file" ]; then
+        echo "Moviendo $log_file a logs/"
+        mv "$log_file" logs/
+    fi
+done
+
+echo "Limpieza completada."

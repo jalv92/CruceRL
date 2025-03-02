@@ -26,12 +26,16 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 # Configurar logging
+# Asegurar que el directorio logs existe
+logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
+os.makedirs(logs_dir, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("rl_trading.log")
+        logging.FileHandler(os.path.join(logs_dir, "rl_trading.log"))
     ]
 )
 logger = logging.getLogger("RLTrading")

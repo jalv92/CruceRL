@@ -18,12 +18,16 @@ import torch
 from TradingEnvironment import TradingEnvironment
 
 # Set up logging
+import os
+logs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+os.makedirs(logs_dir, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("rl_training.log")
+        logging.FileHandler(os.path.join(logs_dir, "rl_training.log"))
     ]
 )
 logger = logging.getLogger("RLTraining")

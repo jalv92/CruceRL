@@ -250,6 +250,23 @@ class MainApplication(tk.Frame):
         if hasattr(self, 'training_manager') and self.training_manager:
             # Aquí podría ir lógica específica para pausar el entrenamiento
             pass
+            
+    def toggle_auto_trading(self):
+        """Activa o desactiva el auto trading"""
+        if not self.nt_interface:
+            messagebox.showerror("Error", "Debe conectarse a NinjaTrader antes de activar el trading automático")
+            # Revertir el cambio en el UI si no hay conexión
+            self.control_panel.switch_var.set(False)
+            self.control_panel.switch_canvas.itemconfig(self.control_panel.switch_bg, fill=COLORS['bg_medium'])
+            self.control_panel.switch_canvas.coords(self.control_panel.switch_handle, 2, 2, 18, 18)
+            return
+            
+        enabled = self.control_panel.switch_var.get()
+        
+        # Configurar el estado de auto trading en la interfaz
+        self.nt_interface.set_auto_trading(enabled)
+        
+        logger.info(f"Auto Trading {'activado' if enabled else 'desactivado'}")
         
     def initialize_objects(self):
         """Inicializar objetos del sistema"""
@@ -320,6 +337,8 @@ class MainApplication(tk.Frame):
             on_train_config=self.show_training_config,
             on_extract_data=self.extract_data_from_ninjatrader
         )
+        # Extender la funcionalidad para manejar el toggle de autotrading
+        self.control_panel.on_switch_toggle = self.toggle_auto_trading
         self.control_panel.grid(row=1, column=0, columnspan=2, sticky='nsew', pady=(5,0))
         
         # Panel de logs (parte inferior de todo)
@@ -519,17 +538,85 @@ class MainApplication(tk.Frame):
             )
             
             # Iniciar interfaz (esto inicia los sockets y threads de comunicación)
-            self.nt_interface.start()
+            connection_result = self.nt_interface.start()
             
-            self.connected = True
-            self.stats_panel.update_connection(True)
-            logger.info(f"Conexión exitosa con NinjaTrader en {ip}:{port}")
-            messagebox.showinfo("Conexión", f"Conectado a NinjaTrader en {ip}:{port}")
+            if not connection_result:
+                logger.error("Conexión inicial fallida")
+                self.stats_panel.update_connection(False)
+                messagebox.showerror("Error de Conexión", 
+                                  "No se pudo establecer conexión con NinjaTrader.\n\n"
+                                  "Posibles causas:\n"
+                                  "- NinjaTrader no está ejecutándose\n"
+                                  "- La Estrategia no está activa en NinjaTrader\n"
+                                  "- IP o puerto incorrectos")
+                
+                # Resetear el estado de los botones para permitir intentar conectar de nuevo
+                self.control_panel.connect_button.configure(state='normal')
+                self.control_panel.disconnect_button.configure(state='disabled')
+                
+                # Liberar recursos
+                if self.nt_interface:
+                    self.nt_interface.stop()
+                    self.nt_interface = None
+                return
+            
+            # Verificar la conexión después de un breve retraso
+            self.parent.after(3000, lambda: self.check_connection_status(ip, port))
             
         except Exception as e:
             logger.error(f"Error en conexión: {e}")
             self.stats_panel.update_connection(False)
             messagebox.showerror("Error de Conexión", f"No se pudo conectar a NinjaTrader: {e}")
+            
+            # Resetear el estado de los botones para permitir intentar conectar de nuevo
+            self.control_panel.connect_button.configure(state='normal')
+            self.control_panel.disconnect_button.configure(state='disabled')
+            
+    def check_connection_status(self, ip, port):
+        """Verificar el estado de la conexión después de un intento"""
+        if self.nt_interface and self.nt_interface.is_connected():
+            # La conexión fue exitosa
+            self.connected = True
+            self.stats_panel.update_connection(True)
+            logger.info(f"Conexión exitosa con NinjaTrader en {ip}:{port}")
+            messagebox.showinfo("Conexión", f"Conectado a NinjaTrader en {ip}:{port}")
+            
+            # Iniciar recolección de estadísticas
+            self.update_stats_periodically()
+        else:
+            # La conexión falló o no está activa
+            self.connected = False
+            self.stats_panel.update_connection(False)
+            
+            messagebox.showerror("Error de Conexión", 
+                              "No se pudo establecer conexión con NinjaTrader.\n\n"
+                              "Posibles causas:\n"
+                              "- NinjaTrader no está ejecutándose\n"
+                              "- La Estrategia no está activa en NinjaTrader\n"
+                              "- IP o puerto incorrectos")
+            
+            logger.error("No se pudo establecer conexión con NinjaTrader")
+            
+            # Detener la interfaz para limpiar recursos
+            if self.nt_interface:
+                self.nt_interface.stop()
+                self.nt_interface = None
+                
+            # Resetear el estado de los botones para permitir intentar conectar de nuevo
+            self.control_panel.connect_button.configure(state='normal')
+            self.control_panel.disconnect_button.configure(state='disabled')
+    
+    def update_stats_periodically(self):
+        """Actualiza las estadísticas de trading periódicamente"""
+        if self.nt_interface and self.connected:
+            # Obtener estadísticas del agente RL
+            stats = self.nt_interface.rl_agent.get_trading_stats()
+            
+            # Actualizar panel de estadísticas
+            self.stats_panel.update_stats(stats)
+            
+            # Programar la próxima actualización
+            self.parent.after(1000, self.update_stats_periodically)  # Cada 1 segundo
             
     def disconnect_from_ninjatrader(self):
         """Desconecta de NinjaTrader"""

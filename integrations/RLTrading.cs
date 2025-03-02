@@ -248,6 +248,20 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (dataSender != null && dataSender.Connected && dataSenderStream != null && dataSenderStream.CanWrite)
                 {
                     isConnecting = false;
+                    
+                    // Try to check connection by sending a ping message
+                    try
+                    {
+                        byte[] pingData = Encoding.ASCII.GetBytes("PONG\n");
+                        dataSenderStream.Write(pingData, 0, pingData.Length);
+                    }
+                    catch
+                    {
+                        // Connection might be stale, close it
+                        CloseDataSender();
+                        // Will attempt reconnection on next call
+                    }
+                    
                     return;
                 }
                 
@@ -279,16 +293,30 @@ namespace NinjaTrader.NinjaScript.Strategies
                 
                 dataSender.EndConnect(result);
                 
+                // Wait a bit to ensure connection is established
+                Thread.Sleep(500);
+                
+                // Try to read Python response to verify the process is running
+                dataSender.ReceiveTimeout = 2000; // 2 second timeout
+                dataSender.SendTimeout = 2000;
+                
+                // Send initial handshake
+                dataSenderStream = dataSender.GetStream();
+                byte[] handshake = Encoding.ASCII.GetBytes("PONG\n");
+                dataSenderStream.Write(handshake, 0, handshake.Length);
+                
                 // Connection successful, reset error flag
                 connectionErrorLogged = false;
                 
-                // Get stream
-                dataSenderStream = dataSender.GetStream();
-                Print("Connected to Python server at " + serverIP + ":" + dataPort);
-                
-                // Set larger buffer sizes
+                // Configure socket
+                dataSender.NoDelay = true;
                 dataSender.SendBufferSize = 65536;
                 dataSender.ReceiveBufferSize = 65536;
+                
+                Print("Connected to Python server at " + serverIP + ":" + dataPort);
+                
+                // Iniciando limpieza de conexión...
+                Print("Iniciando limpieza de conexión...");
                 
                 // Send any buffered data
                 while (dataBuffer.Count > 0)
@@ -1072,6 +1100,51 @@ namespace NinjaTrader.NinjaScript.Strategies
                 else if (orderState == OrderState.Filled || orderState == OrderState.PartFilled)
                 {
                     Print($"Order {order.Id} {orderState}: Filled {filled} @ {averageFillPrice:F2}");
+                    
+                    // Determine action and P&L for sending to Python
+                    string action = "";
+                    double entryPrice = 0;
+                    double exitPrice = 0;
+                    double pnl = 0;
+                    
+                    // Determine trade type from order name
+                    if (order.Name.Contains("RL_Long") && !order.Name.Contains("Exit") && !order.Name.Contains("SL") && !order.Name.Contains("TP"))
+                    {
+                        action = "Enter Long";
+                        entryPrice = averageFillPrice;
+                    }
+                    else if (order.Name.Contains("RL_Short") && !order.Name.Contains("Exit") && !order.Name.Contains("SL") && !order.Name.Contains("TP"))
+                    {
+                        action = "Enter Short";
+                        entryPrice = averageFillPrice;
+                    }
+                    else if (order.Name.Contains("Exit") || order.Name.Contains("SL") || order.Name.Contains("TP"))
+                    {
+                        // This is an exit order
+                        if (order.Name.Contains("Long"))
+                        {
+                            action = "Exit Long";
+                            exitPrice = averageFillPrice;
+                            // Calculate P&L for long position
+                            double positionEntryPrice = Position.AveragePrice;
+                            pnl = (exitPrice - positionEntryPrice) * filled * Instrument.MasterInstrument.PointValue;
+                        }
+                        else if (order.Name.Contains("Short"))
+                        {
+                            action = "Exit Short";
+                            exitPrice = averageFillPrice;
+                            // Calculate P&L for short position
+                            double positionEntryPrice = Position.AveragePrice;
+                            pnl = (positionEntryPrice - exitPrice) * filled * Instrument.MasterInstrument.PointValue;
+                        }
+                    }
+                    
+                    // Send execution data to Python
+                    if (!string.IsNullOrEmpty(action))
+                    {
+                        string executionMessage = $"TRADE_EXECUTED:{action},{entryPrice},{exitPrice},{pnl},{filled}\n";
+                        SendDataMessage(executionMessage);
+                    }
                 }
                 else if (orderState == OrderState.Cancelled)
                 {

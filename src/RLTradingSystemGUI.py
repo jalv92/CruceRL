@@ -45,8 +45,13 @@ root_logger.addHandler(queue_handler)
 root_logger.setLevel(logging.INFO)
 logger = logging.getLogger("TradingSystemGUI")
 
+# Asegurar que el directorio logs existe
+import os
+logs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+os.makedirs(logs_dir, exist_ok=True)
+
 # Configuración adicional para loggear a un archivo
-file_handler = logging.FileHandler("rl_trading_system.log")
+file_handler = logging.FileHandler(os.path.join(logs_dir, "rl_trading_system.log"))
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 root_logger.addHandler(file_handler)
 

@@ -634,6 +634,42 @@ namespace NinjaTrader.NinjaScript.Indicators
         
         // Variable to store the date from which to filter data
         private DateTime? startFromDate = null;
+		
+		private string FormatBarData(int barsAgo, bool isHistorical = false)
+		{
+		    // Format a bar's data into a string
+		    try
+		    {
+		        // Verificar que el índice barsAgo sea válido
+		        if (barsAgo < 0 || barsAgo > CurrentBar)
+		        {
+		            Print($"Invalid barsAgo={barsAgo}, CurrentBar={CurrentBar}");
+		            return null;
+		        }
+		
+		        // Create formatter string
+		        string formatPrefix = isHistorical ? "HISTORICAL:" : "";
+		        string barData = string.Format("{0}{1},{2},{3},{4},{5},{6},{7},{8},{9}",
+		            formatPrefix,
+		            Open[barsAgo].ToString("F2"),
+		            High[barsAgo].ToString("F2"),
+		            Low[barsAgo].ToString("F2"),
+		            Close[barsAgo].ToString("F2"),
+		            emaShort[barsAgo].ToString("F2"),
+		            emaLong[barsAgo].ToString("F2"),
+		            atr[barsAgo].ToString("F2"),
+		            adx[barsAgo].ToString("F2"),
+		            Time[barsAgo].ToString("yyyy-MM-dd HH:mm:ss"));
+		        
+		        // Add newline for message separation
+		        return barData + "\n";
+		    }
+		    catch (Exception ex)
+		    {
+		        Print($"Error formatting bar data for barsAgo={barsAgo}: {ex.Message}");
+		        return null;
+		    }
+		}
         
 		private void SendHistoricalBatch()
 		{
@@ -661,34 +697,34 @@ namespace NinjaTrader.NinjaScript.Indicators
 		    
 		    try
 		    {
-		        if (CurrentBar < barsToSend - 1) // Ajustado para incluir CurrentBar
+		        if (CurrentBar < barsToSend - 1)
 		        {
 		            Print($"Not enough bars available. CurrentBar: {CurrentBar}, barsToSend: {barsToSend}");
 		            return;
 		        }
 		        
-		        Print($"Sending batch: CurrentBar={CurrentBar}, from barsAgo={extractedBarsCount} to {extractedBarsCount + barsToSend - 1}");
+		        Print($"Sending batch: CurrentBar={CurrentBar}, from={extractedBarsCount} to {extractedBarsCount + barsToSend - 1}");
+		        
 		        for (int i = 0; i < barsToSend; i++)
 		        {
-                try
-                {
-                    // Use the common FormatBarData method to create the message
-                    string message = FormatBarData(barsAgo, true);
-                    if (message != null)
-                    {
-                        if (i % 20 == 0)
-                        {
-                            Print($"Sending bar: barsAgo={barsAgo}, time={Time[barsAgo].ToString()}");
-                        }
-                        SendDataMessage(message);
-                        sentInThisBatch++;
-                    }
-		                    if (i % 20 == 0)
+		            // Calculate barsAgo based on extraction count and current index
+		            int barsAgo = CurrentBar - extractedBarsCount - i;
+		            
+		            if (barsAgo >= 0 && barsAgo <= CurrentBar)
+		            {
+		                try
+		                {
+		                    // Use the common FormatBarData method to create the message
+		                    string message = FormatBarData(barsAgo, true);
+		                    if (message != null)
 		                    {
-		                        Print($"Sending bar: barsAgo={barsAgo}, time={Time[barsAgo].ToString()}");
+		                        if (i % 20 == 0)
+		                        {
+		                            Print($"Sending bar: barsAgo={barsAgo}, time={Time[barsAgo].ToString()}");
+		                        }
+		                        SendDataMessage(message);
+		                        sentInThisBatch++;
 		                    }
-		                    SendDataMessage(message);
-		                    sentInThisBatch++;
 		                }
 		                catch (Exception ex)
 		                {
@@ -725,38 +761,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 		    
 		    Print($"Extraction progress: {progressPercent:F1}% ({extractedBarsCount}/{totalBarsToExtract}, sent {sentInThisBatch} bars in this batch)");
 		}
-        
-        // This method has been removed as its functionality is now provided by
-        // FormatBarData and is used in SendHistoricalBatch
-
-        private string FormatBarData(int barsAgo, bool isHistorical = false)
-        {
-            // Format a bar's data into a string
-            try
-            {
-                // Create formatter string
-                string formatPrefix = isHistorical ? "HISTORICAL:" : "";
-                string barData = string.Format("{0}{1},{2},{3},{4},{5},{6},{7},{8},{9}",
-                    formatPrefix,
-                    Open[barsAgo].ToString("F2"),
-                    High[barsAgo].ToString("F2"),
-                    Low[barsAgo].ToString("F2"),
-                    Close[barsAgo].ToString("F2"),
-                    emaShort[barsAgo].ToString("F2"),
-                    emaLong[barsAgo].ToString("F2"),
-                    atr[barsAgo].ToString("F4"),
-                    adx[barsAgo].ToString("F2"),
-                    Time[barsAgo].ToString("yyyy-MM-dd HH:mm:ss"));
-                
-                // Add newline for message separation
-                return barData + "\n";
-            }
-            catch (Exception ex)
-            {
-                Print($"Error formatting bar data for barsAgo={barsAgo}: {ex.Message}");
-                return null;
-            }
-        }
         
         private void SendBarData(int barIndex)
         {

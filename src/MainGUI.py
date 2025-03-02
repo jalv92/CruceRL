@@ -530,17 +530,20 @@ class MainApplication(tk.Frame):
             
             logger.info(f"Conectando a NinjaTrader en {ip}:{port}...")
             
-            # Crear interfaz
-            self.nt_interface = NinjaTraderInterface(
-                server_ip=ip,
+            # Importar las funciones del archivo principal para manejar el servidor
+            import run_trading_system
+            
+            # Iniciar el servidor en segundo plano
+            server_started = run_trading_system.start_server_in_background(
+                ip=ip,
                 data_port=port,
                 order_port=port + 1
             )
             
-            # Iniciar interfaz (esto inicia los sockets y threads de comunicación)
-            connection_result = self.nt_interface.start()
+            # Obtener la referencia global al servidor
+            self.nt_interface = run_trading_system.nt_interface
             
-            if not connection_result:
+            if not server_started or not self.nt_interface:
                 logger.error("Conexión inicial fallida")
                 self.stats_panel.update_connection(False)
                 messagebox.showerror("Error de Conexión", 
@@ -555,9 +558,8 @@ class MainApplication(tk.Frame):
                 self.control_panel.disconnect_button.configure(state='disabled')
                 
                 # Liberar recursos
-                if self.nt_interface:
-                    self.nt_interface.stop()
-                    self.nt_interface = None
+                run_trading_system.stop_server()
+                self.nt_interface = None
                 return
             
             # Verificar la conexión después de un breve retraso
@@ -623,7 +625,11 @@ class MainApplication(tk.Frame):
         try:
             if self.nt_interface:
                 logger.info("Desconectando de NinjaTrader...")
-                self.nt_interface.stop()
+                
+                # Usar la función global para detener el servidor
+                import run_trading_system
+                run_trading_system.stop_server()
+                
                 self.nt_interface = None
                 self.connected = False
                 self.stats_panel.update_connection(False)
@@ -1005,9 +1011,9 @@ class MainApplication(tk.Frame):
                 self.control_panel.pause_button.configure(state='normal')
                 self.control_panel.stop_button.configure(state='normal')
                 
-                # Reiniciar interfaz con el modelo
-                if self.nt_interface:
-                    self.nt_interface.stop()
+                # Detener el servidor actual si existe
+                import run_trading_system
+                run_trading_system.stop_server()
                 
                 # Determinar ruta de normalización
                 vec_normalize_path = None
@@ -1017,17 +1023,17 @@ class MainApplication(tk.Frame):
                     if os.path.exists(possible_vec_norm):
                         vec_normalize_path = possible_vec_norm
                 
-                # Crear interfaz con NinjaTrader
-                self.nt_interface = NinjaTraderInterface(
-                    server_ip=self.control_panel.ip_var.get(),
+                # Iniciar el servidor en segundo plano con el modelo
+                run_trading_system.start_server_in_background(
+                    ip=self.control_panel.ip_var.get(),
                     data_port=int(self.control_panel.data_port_var.get()),
                     order_port=int(self.control_panel.data_port_var.get()) + 1,
                     model_path=model_path,
                     vec_normalize_path=vec_normalize_path
                 )
                 
-                # Iniciar interfaz
-                self.nt_interface.start()
+                # Obtener la referencia global al servidor
+                self.nt_interface = run_trading_system.nt_interface
                 
                 # Bucle principal mientras se ejecuta
                 while self.running:
@@ -1085,8 +1091,7 @@ class MainApplication(tk.Frame):
                     time.sleep(1.0)
                 
                 # Detener interfaz al finalizar
-                if self.nt_interface:
-                    self.nt_interface.stop()
+                run_trading_system.stop_server()
                 
                 logger.info("Modo servidor finalizado")
                 
@@ -1214,9 +1219,9 @@ class MainApplication(tk.Frame):
                 self.control_panel.pause_button.configure(state='normal')
                 self.control_panel.stop_button.configure(state='normal')
                 
-                # Reiniciar interfaz con el modelo
-                if self.nt_interface:
-                    self.nt_interface.stop()
+                # Detener el servidor actual si existe
+                import run_trading_system
+                run_trading_system.stop_server()
                 
                 # Determinar ruta de normalización
                 vec_normalize_path = None
@@ -1226,17 +1231,17 @@ class MainApplication(tk.Frame):
                     if os.path.exists(possible_vec_norm):
                         vec_normalize_path = possible_vec_norm
                 
-                # Crear interfaz con NinjaTrader
-                self.nt_interface = NinjaTraderInterface(
-                    server_ip=self.control_panel.ip_var.get(),
+                # Iniciar el servidor en segundo plano con el modelo
+                run_trading_system.start_server_in_background(
+                    ip=self.control_panel.ip_var.get(),
                     data_port=int(self.control_panel.data_port_var.get()),
                     order_port=int(self.control_panel.data_port_var.get()) + 1,
                     model_path=model_path,
                     vec_normalize_path=vec_normalize_path
                 )
                 
-                # Iniciar interfaz
-                self.nt_interface.start()
+                # Obtener la referencia global al servidor
+                self.nt_interface = run_trading_system.nt_interface
                 
                 # Bucle principal mientras se ejecuta
                 while self.running:
@@ -1294,8 +1299,7 @@ class MainApplication(tk.Frame):
                     time.sleep(1.0)
                 
                 # Detener interfaz al finalizar
-                if self.nt_interface:
-                    self.nt_interface.stop()
+                run_trading_system.stop_server()
                 
                 logger.info("Modo servidor finalizado")
                 

@@ -1,0 +1,417 @@
+# Guía de Integración de NinjaTrader 8 con Python
+
+## Visión General
+Esta guía explica cómo integrar NinjaTrader 8 con el sistema de trading por refuerzo (RL) implementado en Python. El sistema utiliza una arquitectura cliente-servidor donde:
+
+- **Python**: Actúa como servidor para ambas conexiones de datos y órdenes
+- **NinjaTrader 8**: Actúa como cliente, conectándose a los servidores implementados en Python
+
+## Configuración en NinjaTrader 8
+
+### Modificaciones requeridas en RLTrading.cs
+
+El archivo RLTrading.cs debe modificarse para conectarse a los servidores de Python en lugar de intentar iniciar sus propios servidores. Los principales cambios son:
+
+1. **Para la conexión de datos (DataSender)**:
+   - Modificar `InitializeDataSender()` para que NinjaTrader actúe como cliente
+   - Conectarse al servidor Python en el puerto de datos (por defecto: 5000)
+   - Enviar datos de mercado al servidor Python
+
+2. **Para la conexión de órdenes (OrderReceiver)**:
+   - Modificar `InitializeOrderReceiver()` para que NinjaTrader actúe como cliente
+   - Conectarse al servidor Python en el puerto de órdenes (por defecto: 5001)
+   - Recibir órdenes desde el servidor Python
+
+### Implementación
+
+Aquí están los cambios específicos que deben realizarse en RLTrading.cs:
+
+#### 1. Modificar las variables y constantes:
+
+```csharp
+// Renombrar algunas variables para mayor claridad
+private TcpClient dataSender;       // Cliente para enviar datos a Python
+private NetworkStream dataSenderStream;
+private TcpClient orderReceiver;    // Cliente para recibir órdenes de Python
+private NetworkStream orderReceiverStream;
+private Thread orderReceiverThread;
+private bool isOrderReceiverRunning = false;
+```
+
+#### 2. Modificar InitializeDataSender():
+
+```csharp
+private void InitializeDataSender()
+{
+    if (isConnecting || (DateTime.Now - lastConnectionAttempt).TotalSeconds < reconnectInterval)
+        return;
+            
+    isConnecting = true;
+    lastConnectionAttempt = DateTime.Now;
+    
+    try
+    {
+        // Verificar si ya tenemos una conexión activa
+        if (dataSender != null && dataSender.Connected && dataSenderStream != null && dataSenderStream.CanWrite)
+        {
+            isConnecting = false;
+            
+            // Enviar PONG para verificar la conexión
+            try
+            {
+                byte[] pingData = Encoding.ASCII.GetBytes("PONG\n");
+                dataSenderStream.Write(pingData, 0, pingData.Length);
+            }
+            catch (Exception ex)
+            {
+                Print($"Error checking connection: {ex.Message}");
+                // Conexión está caída, cerrarla
+                CloseDataSender();
+            }
+            
+            return;
+        }
+        
+        // Cerrar cualquier conexión existente
+        CloseDataSender();
+        
+        // Crear un TcpClient - NinjaTrader actúa como cliente, conectándose a Python
+        Print($"Intentando conectar al servidor Python de datos en {serverIP}:{dataPort}...");
+        
+        // Crear nueva conexión
+        dataSender = new TcpClient();
+        
+        // Configurar socket antes de la conexión
+        dataSender.NoDelay = true;
+        dataSender.SendBufferSize = 65536;
+        dataSender.ReceiveBufferSize = 65536;
+        dataSender.ReceiveTimeout = 5000;
+        dataSender.SendTimeout = 5000;
+        
+        // Intentar conexión con timeout
+        IAsyncResult result = dataSender.BeginConnect(serverIP, dataPort, null, null);
+        bool success = result.AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(ConnectionTimeout));
+        
+        if (!success)
+        {
+            dataSender.Close();
+            dataSender = null;
+            
+            // Registrar el error de conexión
+            if (!connectionErrorLogged)
+            {
+                Print("Error connecting to Python data server: Connection timeout");
+                connectionErrorLogged = true;
+            }
+            
+            isConnecting = false;
+            return;
+        }
+        
+        // Completar la conexión
+        dataSender.EndConnect(result);
+        
+        // Obtener el stream
+        dataSenderStream = dataSender.GetStream();
+        
+        // Enviar handshake inicial
+        byte[] handshake = Encoding.ASCII.GetBytes("PONG\n");
+        
+        try
+        {
+            dataSenderStream.Write(handshake, 0, handshake.Length);
+            Print("Handshake enviado a Python data server");
+        }
+        catch (Exception ex)
+        {
+            Print($"Error al enviar handshake: {ex.Message}");
+            CloseDataSender();
+            isConnecting = false;
+            return;
+        }
+        
+        // Conexión exitosa, resetear flag de error
+        connectionErrorLogged = false;
+        Print("Connected to Python data server at " + serverIP + ":" + dataPort);
+        
+        // Enviar datos acumulados
+        while (dataBuffer.Count > 0)
+        {
+            try
+            {
+                string data = dataBuffer.Dequeue();
+                byte[] buffer = Encoding.ASCII.GetBytes(data);
+                dataSenderStream.Write(buffer, 0, buffer.Length);
+            }
+            catch (Exception ex)
+            {
+                Print($"Error sending buffered data: {ex.Message}");
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        if (!connectionErrorLogged)
+        {
+            Print("Error connecting to Python data server: " + ex.Message);
+            connectionErrorLogged = true;
+        }
+        
+        // Asegurar limpieza si falló la conexión
+        if (dataSenderStream != null)
+        {
+            try { dataSenderStream.Close(); } catch { }
+            dataSenderStream = null;
+        }
+        
+        if (dataSender != null)
+        {
+            try { dataSender.Close(); } catch { }
+            dataSender = null;
+        }
+    }
+    finally
+    {
+        isConnecting = false;
+    }
+}
+```
+
+#### 3. Modificar InitializeOrderReceiver():
+
+```csharp
+private void InitializeOrderReceiver()
+{
+    try
+    {
+        if (orderReceiver != null && orderReceiver.Connected)
+            return;
+
+        // Cerrar cualquier conexión existente
+        CloseOrderReceiver();
+        
+        // Crear un TcpClient - NinjaTrader actúa como cliente, conectándose a Python
+        Print($"Intentando conectar al servidor Python de órdenes en {serverIP}:{orderPort}...");
+        
+        // Crear nueva conexión
+        orderReceiver = new TcpClient();
+        
+        // Configurar socket antes de la conexión
+        orderReceiver.NoDelay = true;
+        orderReceiver.SendBufferSize = 65536;
+        orderReceiver.ReceiveBufferSize = 65536;
+        orderReceiver.ReceiveTimeout = 5000;
+        orderReceiver.SendTimeout = 5000;
+        
+        // Intentar conexión con timeout
+        IAsyncResult result = orderReceiver.BeginConnect(serverIP, orderPort, null, null);
+        bool success = result.AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(ConnectionTimeout));
+        
+        if (!success)
+        {
+            orderReceiver.Close();
+            orderReceiver = null;
+            Print("Error connecting to Python order server: Connection timeout");
+            return;
+        }
+        
+        // Completar la conexión
+        orderReceiver.EndConnect(result);
+        
+        // Obtener el stream
+        orderReceiverStream = orderReceiver.GetStream();
+        
+        // Enviar handshake inicial
+        byte[] handshake = Encoding.ASCII.GetBytes("PONG\n");
+        
+        try
+        {
+            orderReceiverStream.Write(handshake, 0, handshake.Length);
+            Print("Handshake enviado a Python order server");
+        }
+        catch (Exception ex)
+        {
+            Print($"Error al enviar handshake: {ex.Message}");
+            CloseOrderReceiver();
+            return;
+        }
+        
+        Print("Connected to Python order server at " + serverIP + ":" + orderPort);
+        
+        // Iniciar el hilo de recepción de órdenes
+        isOrderReceiverRunning = true;
+        orderReceiverThread = new Thread(ReceiveOrders);
+        orderReceiverThread.IsBackground = true;
+        orderReceiverThread.Start();
+    }
+    catch (Exception ex)
+    {
+        Print("Error initializing order receiver: " + ex.Message);
+        CloseOrderReceiver();
+    }
+}
+```
+
+#### 4. Modificar ReceiveOrders():
+
+```csharp
+private void ReceiveOrders()
+{
+    while (isOrderReceiverRunning)
+    {
+        try
+        {
+            // Verificar que la conexión esté activa
+            if (orderReceiver == null || !orderReceiver.Connected || orderReceiverStream == null)
+            {
+                // Intentar reconectar
+                Thread.Sleep(3000);
+                InitializeOrderReceiver();
+                continue;
+            }
+            
+            // Buffer para recibir datos
+            byte[] buffer = new byte[4096];
+            StringBuilder messageBuilder = new StringBuilder();
+            
+            // Enviar heartbeat periódicamente
+            DateTime lastHeartbeat = DateTime.Now;
+            
+            while (isOrderReceiverRunning && orderReceiver.Connected)
+            {
+                // Enviar heartbeat cada 5 segundos
+                if ((DateTime.Now - lastHeartbeat).TotalSeconds >= 5)
+                {
+                    try
+                    {
+                        byte[] heartbeat = Encoding.ASCII.GetBytes("PING\n");
+                        orderReceiverStream.Write(heartbeat, 0, heartbeat.Length);
+                        lastHeartbeat = DateTime.Now;
+                    }
+                    catch (Exception ex)
+                    {
+                        Print($"Error sending heartbeat: {ex.Message}");
+                        break;
+                    }
+                }
+                
+                // Verificar si hay datos disponibles
+                if (orderReceiver.Available > 0)
+                {
+                    try
+                    {
+                        int bytesRead = orderReceiverStream.Read(buffer, 0, buffer.Length);
+                        
+                        if (bytesRead == 0)
+                        {
+                            // Conexión cerrada
+                            Print("Order connection closed by Python server");
+                            break;
+                        }
+                        
+                        string data = Encoding.ASCII.GetString(buffer, 0, bytesRead);
+                        messageBuilder.Append(data);
+                        
+                        // Procesar mensajes completos
+                        string message = messageBuilder.ToString();
+                        int newlineIndex;
+                        
+                        while ((newlineIndex = message.IndexOf('\n')) != -1)
+                        {
+                            // Extraer mensaje completo
+                            string completeMessage = message.Substring(0, newlineIndex).Trim();
+                            
+                            // Quitar del buffer
+                            message = message.Substring(newlineIndex + 1);
+                            
+                            // Procesar el mensaje
+                            if (!string.IsNullOrEmpty(completeMessage))
+                            {
+                                ProcessOrderMessage(completeMessage);
+                            }
+                        }
+                        
+                        // Actualizar buffer con mensaje incompleto restante
+                        messageBuilder.Clear();
+                        messageBuilder.Append(message);
+                    }
+                    catch (Exception ex)
+                    {
+                        Print($"Error receiving order data: {ex.Message}");
+                        break;
+                    }
+                }
+                else
+                {
+                    // No hay datos disponibles, breve pausa
+                    Thread.Sleep(10);
+                }
+            }
+        }
+        catch (ThreadAbortException)
+        {
+            // Hilo siendo abortado, salir limpiamente
+            break;
+        }
+        catch (Exception ex)
+        {
+            Print("Error in order receiver: " + ex.Message);
+            Thread.Sleep(1000); // Pausa antes de reintentar
+        }
+        
+        // Cerrar conexión si salimos del bucle
+        try
+        {
+            if (orderReceiverStream != null)
+            {
+                orderReceiverStream.Close();
+                orderReceiverStream = null;
+            }
+            
+            if (orderReceiver != null)
+            {
+                orderReceiver.Close();
+                orderReceiver = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            Print($"Error closing order connection: {ex.Message}");
+        }
+        
+        // Breve pausa antes de reintentar la conexión
+        Thread.Sleep(3000);
+    }
+}
+```
+
+## Configuración en Python
+
+El servidor Python ya está configurado para manejar ambas conexiones. Asegúrese de que el script de Python esté en ejecución y escuchando en los puertos configurados antes de iniciar NinjaTrader.
+
+## Flujo de Comunicación
+
+1. Inicie primero el servidor Python, que empezará a escuchar en los puertos configurados.
+2. Inicie NinjaTrader 8 y cargue la estrategia RLTradeExecutor.
+3. La estrategia intentará conectarse a los servidores Python.
+4. Una vez establecidas las conexiones:
+   - NinjaTrader enviará datos de mercado al servidor Python a través de la conexión de datos
+   - Python enviará señales de trading a NinjaTrader a través de la conexión de órdenes
+   - NinjaTrader ejecutará las órdenes en el mercado y enviará confirmaciones a Python
+
+## Verificación
+
+Para verificar que el sistema está funcionando correctamente:
+
+1. Revise los logs en NinjaTrader para confirmar las conexiones exitosas.
+2. Revise los logs en Python para verificar la recepción de datos.
+3. Pruebe enviar una señal de trading manual y verifique que se ejecute correctamente.
+
+## Solución de Problemas
+
+Si tiene problemas con la conexión:
+
+1. Verifique que no haya firewall bloqueando los puertos.
+2. Asegúrese de que las direcciones IP y puertos coincidan en ambos sistemas.
+3. Verifique que Python esté en ejecución antes de iniciar NinjaTrader.
+4. Revise los logs para mensajes de error específicos.

@@ -2,15 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
-using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Media;
-using System.Windows.Shapes;
-using System.Windows.Controls.Primitives;
+using System.Threading.Tasks;
+using System.Net;
+using System.Net.Sockets;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
@@ -19,998 +16,1087 @@ using NinjaTrader.Gui.Tools;
 using NinjaTrader.Data;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.Core.FloatingPoint;
+using NinjaTrader.NinjaScript.Indicators;
 using NinjaTrader.NinjaScript.DrawingTools;
-using System.Xml.Serialization;
 
-namespace NinjaTrader.NinjaScript.Indicators
+namespace NinjaTrader.NinjaScript.Strategies
 {
-    /// <summary>
-    /// This indicator extracts market data and indicator values for a Python-based RL trading system.
-    /// Features a control panel with an "Extract Data" button for manual data extraction.
-    /// </summary>
-    public class RLLink : Indicator
+    public class RLExecutor : Strategy
     {
+        #region TCP Server Manager
+        /// <summary>
+        /// Helper class to manage TCP server functionality
+        /// </summary>
+        private class TcpServerManager
+        {
+            // Properties
+            public string Name { get; private set; }
+            public string ServerIP { get; private set; }
+            public int Port { get; private set; }
+            public bool IsRunning { get; private set; }
+            public DateTime LastHeartbeatTime { get; set; }
+            public bool IsConnected => Client != null && Client.Connected;
+            
+            // Connection objects
+            public TcpListener Server { get; private set; }
+            public TcpClient Client { get; private set; }
+            public NetworkStream ClientStream { get; private set; }
+            
+            // Thread management
+            private Thread serverThread;
+            private Queue<string> messageBuffer;
+            private int bufferSize;
+            
+            // Delegates and events
+            public delegate void MessageReceivedHandler(string message);
+            public event MessageReceivedHandler OnMessageReceived;
+            
+            // Connection timeout
+            private int connectionTimeout;
+            
+            // Logger function (using Print from NinjaTrader)
+            private Action<string> logFunc;
+            
+            /// <summary>
+            /// Constructor for TcpServerManager
+            /// </summary>
+            public TcpServerManager(string name, string serverIP, int port, int bufferSize = 60, int connectionTimeout = 5, Action<string> logger = null)
+            {
+                Name = name;
+                ServerIP = serverIP;
+                Port = port;
+                this.bufferSize = bufferSize;
+                this.connectionTimeout = connectionTimeout;
+                messageBuffer = new Queue<string>();
+                LastHeartbeatTime = DateTime.MinValue;
+                logFunc = logger ?? (message => { /* Default empty logger */ });
+            }
+            
+            /// <summary>
+            /// Start the TCP server
+            /// </summary>
+            public bool Start()
+            {
+                if (IsRunning)
+                    return true;
+                    
+                try
+                {
+                    // Clean up existing resources
+                    Stop();
+                    
+                    // Log server start attempt
+                    logFunc($"Starting {Name} server on {ServerIP}:{Port}...");
+                    
+                    // Create and start TCP listener
+                    IPAddress ipAddress = IPAddress.Parse(ServerIP);
+                    Server = new TcpListener(ipAddress, Port);
+                    Server.Start();
+                    
+                    // Log successful start
+                    logFunc($"{Name} server started on {ServerIP}:{Port}");
+                    
+                    // Start server thread
+                    IsRunning = true;
+                    serverThread = new Thread(ServerLoop);
+                    serverThread.IsBackground = true;
+                    serverThread.Start();
+                    
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    // Log error and clean up
+                    logFunc($"Error starting {Name} server: {ex.Message}");
+                    
+                    if (Server != null)
+                    {
+                        try { Server.Stop(); } catch { }
+                        Server = null;
+                    }
+                    
+                    IsRunning = false;
+                    return false;
+                }
+            }
+            
+            /// <summary>
+            /// Stop the TCP server and clean up resources
+            /// </summary>
+            public void Stop()
+            {
+                try
+                {
+                    // Mark server as stopping
+                    IsRunning = false;
+                    
+                    // Close client stream
+                    if (ClientStream != null)
+                    {
+                        try
+                        {
+                            ClientStream.Flush();
+                            ClientStream.Close();
+                        }
+                        catch (Exception ex)
+                        {
+                            logFunc($"Error closing {Name} client stream: {ex.Message}");
+                        }
+                        finally
+                        {
+                            ClientStream = null;
+                        }
+                    }
+                    
+                    // Close client connection
+                    if (Client != null)
+                    {
+                        try
+                        {
+                            Client.Close();
+                        }
+                        catch (Exception ex)
+                        {
+                            logFunc($"Error closing {Name} client: {ex.Message}");
+                        }
+                        finally
+                        {
+                            Client = null;
+                        }
+                    }
+                    
+                    // Stop the server
+                    if (Server != null)
+                    {
+                        try
+                        {
+                            Server.Stop();
+                        }
+                        catch (Exception ex)
+                        {
+                            logFunc($"Error stopping {Name} server: {ex.Message}");
+                        }
+                        finally
+                        {
+                            Server = null;
+                        }
+                    }
+                    
+                    // Wait for thread to terminate
+                    if (serverThread != null && serverThread.IsAlive)
+                    {
+                        try
+                        {
+                            serverThread.Join(2000);
+                            if (serverThread.IsAlive)
+                            {
+                                // Last resort
+                                serverThread.Abort();
+                            }
+                        }
+                        catch { }
+                        serverThread = null;
+                    }
+                    
+                    logFunc($"{Name} server stopped successfully");
+                }
+                catch (Exception ex)
+                {
+                    logFunc($"Error stopping {Name} server: {ex.Message}");
+                }
+                finally
+                {
+                    // Force resource cleanup
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                }
+            }
+            
+            /// <summary>
+            /// Send a message to the connected client or buffer it
+            /// </summary>
+            public bool SendMessage(string message)
+            {
+                try
+                {
+                    // Check if connected to a client
+                    if (Client != null && Client.Connected && ClientStream != null)
+                    {
+                        // Send data directly
+                        byte[] data = Encoding.ASCII.GetBytes(message);
+                        ClientStream.Write(data, 0, data.Length);
+                        
+                        // Log non-heartbeat messages for debugging
+                        if (!message.StartsWith("PING") && !message.StartsWith("PONG") && !message.StartsWith("HEARTBEAT"))
+                        {
+                            logFunc($"[{Name} Server] Sent: {message.Trim()}");
+                        }
+                        
+                        return true;
+                    }
+                    else
+                    {
+                        // Buffer the message if it's not a heartbeat
+                        if (!message.StartsWith("PING") && !message.StartsWith("PONG") && !message.StartsWith("HEARTBEAT"))
+                        {
+                            messageBuffer.Enqueue(message);
+                            
+                            // Limit buffer size
+                            while (messageBuffer.Count > bufferSize)
+                                messageBuffer.Dequeue();
+                                
+                            logFunc($"[{Name} Server] Buffered message (no connection): {message.Trim()}");
+                        }
+                        
+                        return false;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logFunc($"Error sending {Name} message: {ex.Message}");
+                    
+                    // Buffer non-heartbeat messages for retry
+                    if (!message.StartsWith("PING") && !message.StartsWith("PONG") && !message.StartsWith("HEARTBEAT"))
+                    {
+                        messageBuffer.Enqueue(message);
+                        
+                        // Limit buffer size
+                        while (messageBuffer.Count > bufferSize)
+                            messageBuffer.Dequeue();
+                    }
+                    
+                    // Client connection might be broken, clean up
+                    if (ClientStream != null)
+                    {
+                        try { ClientStream.Close(); } catch { }
+                        ClientStream = null;
+                    }
+                    
+                    if (Client != null)
+                    {
+                        try { Client.Close(); } catch { }
+                        Client = null;
+                    }
+                    
+                    return false;
+                }
+            }
+            
+            /// <summary>
+            /// Main server loop to accept and handle client connections
+            /// </summary>
+            private void ServerLoop()
+            {
+                logFunc($"{Name} server thread started. Waiting for Python client connection...");
+                
+                while (IsRunning)
+                {
+                    try
+                    {
+                        // Check for pending connections
+                        if (Server.Pending())
+                        {
+                            // Accept the client connection
+                            Client = Server.AcceptTcpClient();
+                            Client.NoDelay = true;
+                            Client.SendBufferSize = 65536;
+                            Client.ReceiveBufferSize = 65536;
+                            
+                            // Get the client stream
+                            ClientStream = Client.GetStream();
+                            
+                            logFunc($"Python client connected to {Name} server from {Client.Client.RemoteEndPoint}");
+                            
+                            // Send welcome message
+                            string welcomeMessage = Name == "Data" ? "SERVER_READY\n" : "ORDER_SERVER_READY\n";
+                            SendMessage(welcomeMessage);
+                            
+                            // Update heartbeat time
+                            LastHeartbeatTime = DateTime.Now;
+                            
+                            // Send accumulated data from buffer
+                            while (messageBuffer.Count > 0)
+                            {
+                                try
+                                {
+                                    string data = messageBuffer.Dequeue();
+                                    SendMessage(data);
+                                }
+                                catch (Exception ex)
+                                {
+                                    logFunc($"Error sending buffered data: {ex.Message}");
+                                }
+                            }
+                            
+                            // Process data from the client
+                            byte[] buffer = new byte[4096];
+                            StringBuilder messageBuilder = new StringBuilder();
+                            
+                            // Main client data reception loop
+                            while (IsRunning && Client != null && Client.Connected)
+                            {
+                                // Check if there's data to read
+                                if (Client.Available > 0)
+                                {
+                                    int bytesRead = ClientStream.Read(buffer, 0, buffer.Length);
+                                    
+                                    if (bytesRead == 0)
+                                    {
+                                        // Connection closed by client
+                                        break;
+                                    }
+                                    
+                                    string data = Encoding.ASCII.GetString(buffer, 0, bytesRead);
+                                    messageBuilder.Append(data);
+                                    
+                                    // Process complete messages
+                                    string message = messageBuilder.ToString();
+                                    int newlineIndex;
+                                    
+                                    while ((newlineIndex = message.IndexOf('\n')) != -1)
+                                    {
+                                        // Extract complete message
+                                        string completeMessage = message.Substring(0, newlineIndex).Trim();
+                                        
+                                        // Remove the processed message from buffer
+                                        message = message.Substring(newlineIndex + 1);
+                                        
+                                        // Process the message
+                                        if (!string.IsNullOrEmpty(completeMessage))
+                                        {
+                                            // Handle PING directly here for faster response
+                                            if (completeMessage.Equals("PING", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                SendMessage("PONG\n");
+                                                LastHeartbeatTime = DateTime.Now;
+                                            }
+                                            else
+                                            {
+                                                // Notify subscribers about received message
+                                                OnMessageReceived?.Invoke(completeMessage);
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Update buffer with remaining incomplete message
+                                    messageBuilder.Clear();
+                                    messageBuilder.Append(message);
+                                }
+                                
+                                // Short sleep to prevent high CPU usage
+                                Thread.Sleep(10);
+                                
+                                // Send heartbeat periodically
+                                if (DateTime.Now - LastHeartbeatTime > TimeSpan.FromSeconds(5))
+                                {
+                                    try
+                                    {
+                                        SendMessage("PING\n");
+                                        LastHeartbeatTime = DateTime.Now;
+                                    }
+                                    catch
+                                    {
+                                        // Connection might be broken
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Client disconnected or error occurred
+                            logFunc($"Python client disconnected from {Name} server");
+                            
+                            // Clean up client resources
+                            if (ClientStream != null)
+                            {
+                                try { ClientStream.Close(); } catch { }
+                                ClientStream = null;
+                            }
+                            
+                            if (Client != null)
+                            {
+                                try { Client.Close(); } catch { }
+                                Client = null;
+                            }
+                        }
+                        
+                        // Short sleep before checking for new connections
+                        Thread.Sleep(100);
+                    }
+                    catch (Exception ex)
+                    {
+                        logFunc($"Error in {Name} server loop: {ex.Message}");
+                        
+                        // Clean up client resources
+                        if (ClientStream != null)
+                        {
+                            try { ClientStream.Close(); } catch { }
+                            ClientStream = null;
+                        }
+                        
+                        if (Client != null)
+                        {
+                            try { Client.Close(); } catch { }
+                            Client = null;
+                        }
+                        
+                        // Short delay before retrying
+                        Thread.Sleep(1000);
+                    }
+                }
+                
+                logFunc($"{Name} server thread stopped");
+            }
+        }
+        #endregion
+        
         #region Variables
-        // Data extraction variables
-        private bool isExtractingData = false;
-        private bool isExtractionComplete = false;
-        private int totalBarsToExtract = 0;
-        private int extractedBarsCount = 0;
+        // TCP communication 
+        private TcpServerManager dataServer;
+        private TcpServerManager orderServer;
+        private string listenIP = "127.0.0.1";
+        private int dataPort = 5000;
+        private int orderPort = 5001;
+        private int connectionTimeout = 5;
+        private int dataBufferSize = 60;
+        private bool connectionErrorLogged = false;
         
-        // CSV export variables
-        private string csvFilePath = "";
-        private StreamWriter csvWriter = null;
-        
-        // Technical indicators
-        private EMA emaShort;
-        private EMA emaLong;
-        private ATR atr;
-        private ADX adx;
-        private RSI rsi;
-        private Bollinger bollinger;
-        private MACD macd;
-        
-        // UI Elements
-        private Grid controlPanel;
-        private Button extractButton;
-        private TextBlock statusTextBlock;
-        private System.Windows.Shapes.Rectangle progressBar;
-        private System.Windows.Shapes.Rectangle progressBarBackground;
-        private bool controlPanelVisible = true;
-        private string statusMessage = "Ready";
-        private double progressPercent = 0;
-        
-        // Panel settings
-        private int panelWidth = 175;
-        private int panelHeight = 95;
-        private int panelMargin = 10;
-        private SolidColorBrush panelBackground = new SolidColorBrush(Color.FromArgb(200, 30, 30, 50));
-        private SolidColorBrush buttonColor = new SolidColorBrush(Color.FromArgb(255, 55, 120, 180));
-        private SolidColorBrush buttonHoverColor = new SolidColorBrush(Color.FromArgb(255, 70, 150, 220));
-        private SolidColorBrush buttonTextColor = new SolidColorBrush(Colors.White);
-        private SolidColorBrush statusTextColor = new SolidColorBrush(Colors.LightGray);
-        private SolidColorBrush progressBarColor = new SolidColorBrush(Color.FromArgb(255, 46, 204, 113));
-        private SolidColorBrush progressBarBackgroundColor = new SolidColorBrush(Color.FromArgb(80, 150, 150, 150));
+        // Trading variables
+        private MarketPosition currentPosition = MarketPosition.Flat;
+        private int currentSignal = 0; // -1 = short, 0 = flat, 1 = long
+        private int currentEMA = 0; // 0 = none, 1 = short, 2 = long
+        private double currentPositionSize = 1.0;
+        private double currentStopLoss = 0;
+        private double currentTakeProfit = 0;
+        private double basePositionSize = 1; // Default contract size
+        private int orderRetryCount = 3;
+        private int orderRetryDelayMs = 1000;
         #endregion
 
         #region Properties
         [NinjaScriptProperty]
-        [Display(Name = "Export Folder Path", Description = "Folder path for CSV export (use full path)", Order = 1, GroupName = "Export Settings")]
-        public string ExportFolderPath { get; set; }
-        
-        [NinjaScriptProperty]
-        [Display(Name = "EMA Short Period", Description = "Period for short EMA calculation", Order = 2, GroupName = "Indicators")]
-        public int EMAShortPeriod { get; set; }
+        [Display(Name = "Server IP", Description = "IP address to listen on", Order = 1, GroupName = "Socket Settings")]
+        public string ServerIP { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "EMA Long Period", Description = "Period for long EMA calculation", Order = 3, GroupName = "Indicators")]
-        public int EMALongPeriod { get; set; }
+        [Display(Name = "Data Port", Description = "Port to send market data to Python", Order = 2, GroupName = "Socket Settings")]
+        public int DataPort { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "ATR Period", Description = "Period for ATR calculation", Order = 4, GroupName = "Indicators")]
-        public int ATRPeriod { get; set; }
+        [Display(Name = "Order Port", Description = "Port to receive trading signals from Python", Order = 3, GroupName = "Socket Settings")]
+        public int OrderPort { get; set; }
+        
+        [NinjaScriptProperty]
+        [Display(Name = "Connection Timeout", Description = "Timeout in seconds for socket connections", Order = 4, GroupName = "Socket Settings")]
+        public int ConnectionTimeout { get; set; }
+        
+        [NinjaScriptProperty]
+        [Display(Name = "Base Position Size", Description = "Base number of contracts/units for trades", Order = 5, GroupName = "Trading Settings")]
+        public double BasePositionSize { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "ADX Period", Description = "Period for ADX calculation", Order = 5, GroupName = "Indicators")]
-        public int ADXPeriod { get; set; }
+        [Display(Name = "Order Retry Count", Description = "Number of times to retry failed orders", Order = 6, GroupName = "Trading Settings")]
+        public int OrderRetryCount { get; set; }
         
         [NinjaScriptProperty]
-        [Display(Name = "RSI Period", Description = "Period for RSI calculation", Order = 6, GroupName = "Indicators")]
-        public int RSIPeriod { get; set; }
-        
-        [NinjaScriptProperty]
-        [Display(Name = "Bollinger Bands Period", Description = "Period for Bollinger Bands calculation", Order = 7, GroupName = "Indicators")]
-        public int BollingerPeriod { get; set; }
-        
-        [NinjaScriptProperty]
-        [Display(Name = "Bollinger Bands StdDev", Description = "Standard deviations for Bollinger Bands", Order = 8, GroupName = "Indicators")]
-        public double BollingerStdDev { get; set; }
-        
-        [NinjaScriptProperty]
-        [Display(Name = "MACD Fast", Description = "MACD fast period", Order = 9, GroupName = "Indicators")]
-        public int MACDFast { get; set; }
-        
-        [NinjaScriptProperty]
-        [Display(Name = "MACD Slow", Description = "MACD slow period", Order = 10, GroupName = "Indicators")]
-        public int MACDSlow { get; set; }
-        
-        [NinjaScriptProperty]
-        [Display(Name = "MACD Signal", Description = "MACD signal period", Order = 11, GroupName = "Indicators")]
-        public int MACDSignal { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Max Historical Bars", Description = "Maximum number of historical bars to extract", Order = 12, GroupName = "Data Settings")]
-        public int MaxHistoricalBars { get; set; }
-        
-        [NinjaScriptProperty]
-        [Display(Name = "Show Control Panel", Description = "Show or hide the control panel", Order = 13, GroupName = "Interface")]
-        public bool ShowControlPanel { get; set; }
-        
-        [Browsable(false)]
-        [XmlIgnore]
-        public Series<bool> IsExtracting { get; set; }
+        [Display(Name = "Use Managed Orders", Description = "Use managed or unmanaged order handling", Order = 7, GroupName = "Trading Settings")]
+        public bool UseManagedOrders { get; set; }
         #endregion
 
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
             {
-                Description = "Data extraction indicator for RL Python model with control panel";
-                Name = "RLLink";
-                Calculate = Calculate.OnBarClose;
-                IsOverlay = true;  // Set to true so we can display the control panel
-                DisplayInDataBox = true;
-                DrawOnPricePanel = false;
-                PaintPriceMarkers = true;
+                Description = "Trading strategy that communicates with a Python RL model for signal generation and execution";
+                Name = "RLExecutor";
                 
                 // Default settings
-                ExportFolderPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) + "\\NT8 RL\\data";
-                EMAShortPeriod = 9;
-                EMALongPeriod = 21;
-                ATRPeriod = 14;
-                ADXPeriod = 14;
-                RSIPeriod = 14;
-                BollingerPeriod = 20;
-                BollingerStdDev = 2;
-                MACDFast = 12;
-                MACDSlow = 26;
-                MACDSignal = 9;
-                MaxHistoricalBars = 2000;
-                ShowControlPanel = true;
+                ServerIP = "127.0.0.1";
+                DataPort = 5000;
+                OrderPort = 5001;
+                ConnectionTimeout = 5;
+                BasePositionSize = 1;
+                OrderRetryCount = 3;
+                UseManagedOrders = true; // Default to managed orders
+                
+                // Set up calculation mode
+                Calculate = Calculate.OnBarClose;
+                BarsRequiredToTrade = 20;
+                IsExitOnSessionCloseStrategy = true;
+                
+                // Set this according to UseManagedOrders
+                IsUnmanaged = !UseManagedOrders;
             }
             else if (State == State.Configure)
             {
-                // Add the series we want to plot
-                IsExtracting = new Series<bool>(this);
+                // Set local variables from properties
+                listenIP = ServerIP;
+                dataPort = DataPort;
+                orderPort = OrderPort;
+                connectionTimeout = ConnectionTimeout;
+                basePositionSize = BasePositionSize;
+                orderRetryCount = OrderRetryCount;
                 
-                // Add technical indicators
-                emaShort = EMA(EMAShortPeriod);
-                emaLong = EMA(EMALongPeriod);
-                atr = ATR(ATRPeriod);
-                adx = ADX(ADXPeriod);
-                rsi = RSI(RSIPeriod, 3);
-                bollinger = Bollinger(BollingerPeriod, (int)BollingerStdDev);
-                macd = MACD(MACDFast, MACDSlow, MACDSignal);
+                // Update IsUnmanaged based on UseManagedOrders
+                IsUnmanaged = !UseManagedOrders;
                 
-                // Add extraction status indicator
-                AddPlot(new Stroke(System.Windows.Media.Brushes.DodgerBlue, 1), PlotStyle.Line, "ExtractionStatus");
+                // Initialize TCP server managers
+                dataServer = new TcpServerManager("Data", listenIP, dataPort, dataBufferSize, connectionTimeout, Print);
+                orderServer = new TcpServerManager("Order", listenIP, orderPort, dataBufferSize, connectionTimeout, Print);
+                
+                // Register message handlers
+                dataServer.OnMessageReceived += ProcessDataMessage;
+                orderServer.OnMessageReceived += ProcessOrderMessage;
             }
-            else if (State == State.DataLoaded)
+            else if (State == State.Realtime)
             {
-                // Create the control panel when data is loaded
-                if (ShowControlPanel && ChartControl != null)
+                // Reset connection error flag
+                connectionErrorLogged = false;
+                
+                // Initialize server asynchronously when switching to real-time
+                // This prevents freezing the UI while waiting for initialization
+                this.Dispatcher.InvokeAsync(() =>
                 {
-                    CreateControlPanel();
-                }
+                    // Start the servers
+                    Print("Starting data and order servers...");
+                    
+                    bool dataServerStarted = dataServer.Start();
+                    Thread.Sleep(500);
+                    bool orderServerStarted = orderServer.Start();
+                    
+                    if (dataServerStarted && orderServerStarted) {
+                        Print("Servers started successfully. Waiting for Python client to connect...");
+                    } else {
+                        Print("ERROR: Failed to start one or more servers. Python client will not be able to connect.");
+                    }
+                });
+                
+                Print("Starting servers asynchronously...");
             }
             else if (State == State.Terminated)
             {
-                // Clean up resources and UI elements
-                RemoveControlPanel();
-                CloseCSVFile();
+                // Stop servers and close client connections when terminated
+                dataServer.Stop();
+                orderServer.Stop();
             }
         }
-        
+
         protected override void OnBarUpdate()
         {
-            try
-            {
-                // Only process bars on the primary series
-                if (BarsInProgress != 0)
-                    return;
-                
-                // Check if we have enough bars
-                if (CurrentBar < 20) // Need at least 20 bars for indicators to work
-                    return;
-                
-                // Update the extraction status plot
-                IsExtracting[0] = isExtractingData;
-                Values[0][0] = isExtractingData ? 1 : 0;
-                
-                // If we are extracting historical data, process that first
-                if (isExtractingData && !isExtractionComplete)
-                {
-                    // Process extraction in a background thread to avoid UI freezing
-                    this.Dispatcher.InvokeAsync(() => {
-                        try {
-                            ProcessHistoricalBatch();
-                        }
-                        catch (Exception ex) {
-                            Print($"Error in ProcessHistoricalBatch: {ex.Message}");
-                            CompleteExtraction(); // Ensure we clean up if there's an error
-                        }
-                    });
-                }
-                
-                // Update progress bar if extraction is in progress
-                if (isExtractingData && progressBar != null)
-                {
-                    this.Dispatcher.InvokeAsync(() => {
-                        UpdateProgressBar(progressPercent);
-                    });
-                }
-            }
-            catch (Exception ex)
-            {
-                Print($"Error in OnBarUpdate: {ex.Message}");
-            }
+            // No need to implement any bar update logic
+            // All trading is triggered via socket communication
         }
         
-        protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
-        {
-            base.OnRender(chartControl, chartScale);
-            
-            // Update control panel position if it's visible
-            if (controlPanel != null && controlPanel.Visibility == Visibility.Visible)
-            {
-                // Position in top right corner
-                Canvas.SetLeft(controlPanel, chartControl.ActualWidth - panelWidth - panelMargin);
-                Canvas.SetTop(controlPanel, panelMargin);
-            }
-        }
-        
-        #region UI Methods
-        /// <summary>
-        /// Creates the control panel UI
-        /// </summary>
-        private void CreateControlPanel()
+        #region Message Processing Methods
+        private void ProcessDataMessage(string message)
         {
             try
             {
-                if (ChartControl == null)
+                // Handle incoming messages from Python client
+                if (message.Equals("PONG", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Heartbeat response - handled in server manager
                     return;
+                }
+                
+                if (message.StartsWith("CONNECT:", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Client sending connection info
+                    string[] parts = message.Split(':');
+                    if (parts.Length > 1)
+                    {
+                        string clientInfo = parts[1];
+                        Print($"Python client info: {clientInfo}");
+                    }
                     
-                // Remove existing panel if any
-                RemoveControlPanel();
+                    // Respond with server info
+                    dataServer.SendMessage($"SERVER_INFO:NinjaTrader:{Instrument.MasterInstrument.Name}\n");
+                    return;
+                }
                 
-                // Create main panel
-                controlPanel = new Grid();
-                controlPanel.Width = panelWidth;
-                controlPanel.Height = panelHeight;
-                controlPanel.Background = panelBackground;
-                controlPanel.Visibility = ShowControlPanel ? Visibility.Visible : Visibility.Collapsed;
-                
-                // Create panel header
-                Border headerBorder = new Border();
-                headerBorder.Height = 24;
-                headerBorder.Background = new SolidColorBrush(Color.FromArgb(255, 40, 40, 60));
-                headerBorder.VerticalAlignment = VerticalAlignment.Top;
-                
-                TextBlock headerText = new TextBlock();
-                headerText.Text = "RL Control Panel";
-                headerText.Foreground = buttonTextColor;
-                headerText.FontWeight = FontWeights.Bold;
-                headerText.VerticalAlignment = VerticalAlignment.Center;
-                headerText.HorizontalAlignment = HorizontalAlignment.Center;
-                
-                headerBorder.Child = headerText;
-                controlPanel.Children.Add(headerBorder);
-                
-                // Define rows for layout
-                controlPanel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) }); // Header
-                controlPanel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(40) }); // Button
-                controlPanel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(30) }); // Status + Progress
-                
-                // Create extract button
-                extractButton = new Button();
-                extractButton.Content = "Extract Data";
-                extractButton.Background = buttonColor;
-                extractButton.Foreground = buttonTextColor;
-                extractButton.BorderThickness = new Thickness(0);
-                extractButton.Margin = new Thickness(10, 8, 10, 8);
-                extractButton.Click += ExtractButton_Click;
-                extractButton.MouseEnter += (s, e) => { extractButton.Background = buttonHoverColor; };
-                extractButton.MouseLeave += (s, e) => { extractButton.Background = buttonColor; };
-                
-                Grid.SetRow(extractButton, 1);
-                controlPanel.Children.Add(extractButton);
-                
-                // Create status text and progress bar container
-                Grid statusGrid = new Grid();
-                statusGrid.Margin = new Thickness(10, 0, 10, 8);
-                Grid.SetRow(statusGrid, 2);
-                
-                // Status text
-                statusTextBlock = new TextBlock();
-                statusTextBlock.Text = statusMessage;
-                statusTextBlock.Foreground = statusTextColor;
-                statusTextBlock.VerticalAlignment = VerticalAlignment.Top;
-                statusTextBlock.Margin = new Thickness(0, 0, 0, 3);
-                statusGrid.Children.Add(statusTextBlock);
-                
-                // Progress bar background
-                progressBarBackground = new System.Windows.Shapes.Rectangle();
-                progressBarBackground.Height = 6;
-                progressBarBackground.Fill = progressBarBackgroundColor;
-                progressBarBackground.RadiusX = 3;
-                progressBarBackground.RadiusY = 3;
-                progressBarBackground.VerticalAlignment = VerticalAlignment.Bottom;
-                statusGrid.Children.Add(progressBarBackground);
-                
-                // Progress bar
-                progressBar = new System.Windows.Shapes.Rectangle();
-                progressBar.Height = 6;
-                progressBar.Fill = progressBarColor;
-                progressBar.RadiusX = 3;
-                progressBar.RadiusY = 3;
-                progressBar.VerticalAlignment = VerticalAlignment.Bottom;
-                progressBar.HorizontalAlignment = HorizontalAlignment.Left;
-                progressBar.Width = 0; // Start with no progress
-                statusGrid.Children.Add(progressBar);
-                
-                controlPanel.Children.Add(statusGrid);
-                
-                // Add panel to chart
-                ChartControl.Dispatcher.InvokeAsync(new Action(() => {
-                    try {
-                        ChartControl.Parent.Controls.Add(controlPanel);
-                        Canvas.SetLeft(controlPanel, ChartControl.ActualWidth - panelWidth - panelMargin);
-                        Canvas.SetTop(controlPanel, panelMargin);
-                        Canvas.SetZIndex(controlPanel, 1000); // Ensure it's on top
-                    }
-                    catch (Exception ex) {
-                        Print($"Error adding control panel to chart: {ex.Message}");
-                    }
-                }));
+                // Process any data-specific messages here
+                Print($"Received from Python data client: {message}");
             }
             catch (Exception ex)
             {
-                Print($"Error creating control panel: {ex.Message}");
+                Print($"Error processing data message: {ex.Message}");
             }
         }
         
-        /// <summary>
-        /// Removes the control panel from the chart
-        /// </summary>
-        private void RemoveControlPanel()
+        private void ProcessOrderMessage(string message)
         {
-            if (ChartControl != null && controlPanel != null)
-            {
-                ChartControl.Dispatcher.InvokeAsync(() => {
-                    try {
-                        if (ChartControl.Parent != null && ChartControl.Parent.Controls.Contains(controlPanel))
-                        {
-                            ChartControl.Parent.Controls.Remove(controlPanel);
-                        }
-                        
-                        // Clean up event handlers
-                        if (extractButton != null)
-                        {
-                            extractButton.Click -= ExtractButton_Click;
-                        }
-                        
-                        controlPanel = null;
-                        extractButton = null;
-                        statusTextBlock = null;
-                        progressBar = null;
-                        progressBarBackground = null;
-                    }
-                    catch (Exception ex) {
-                        Print($"Error removing control panel: {ex.Message}");
-                    }
-                });
-            }
-        }
-        
-        /// <summary>
-        /// Updates the status message and progress bar
-        /// </summary>
-        private void UpdateStatus(string message, double percent)
-        {
-            if (ChartControl == null || statusTextBlock == null)
-                return;
-                
             try
             {
-                statusMessage = message;
-                progressPercent = percent;
+                if (string.IsNullOrEmpty(message))
+                    return;
                 
-                ChartControl.Dispatcher.InvokeAsync(() => {
-                    try {
-                        if (statusTextBlock != null)
-                            statusTextBlock.Text = message;
+                // PING/HEARTBEAT handling already done in server manager
+                if (message.Equals("PING", StringComparison.OrdinalIgnoreCase) ||
+                    message.Equals("PONG", StringComparison.OrdinalIgnoreCase) ||
+                    message.Equals("HEARTBEAT", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+                
+                // Process trading signals from Python (expected format: signal,emaChoice,positionSize,stopLoss,takeProfit)
+                ProcessTradingSignal(message);
+            }
+            catch (Exception ex)
+            {
+                Print($"Error processing order message: {ex.Message}");
+                orderServer.SendMessage("ERROR:Processing_Error\n");
+            }
+        }
+        
+        private void ProcessTradingSignal(string message)
+        {
+            string[] commandParts = message.Split(',');
+            
+            if (commandParts.Length < 5)
+            {
+                Print("Invalid order message format. Expected at least 5 parameters.");
+                // Send error response to client
+                orderServer.SendMessage("ERROR:Invalid_Format\n");
+                return;
+            }
+            
+            // Parse parameters
+            int tradeSignal;
+            int emaChoice;
+            double positionSize;
+            double stopLoss;
+            double takeProfit;
+            
+            if (!int.TryParse(commandParts[0], out tradeSignal) ||
+                !int.TryParse(commandParts[1], out emaChoice) ||
+                !double.TryParse(commandParts[2], out positionSize) ||
+                !double.TryParse(commandParts[3], out stopLoss) ||
+                !double.TryParse(commandParts[4], out takeProfit))
+            {
+                Print("Invalid order message data. Could not parse values.");
+                orderServer.SendMessage("ERROR:Invalid_Values\n");
+                return;
+            }
+            
+            // Validate parameters
+            if (tradeSignal < -1 || tradeSignal > 1)
+            {
+                Print("Invalid trade signal: " + tradeSignal);
+                orderServer.SendMessage("ERROR:Invalid_Signal\n");
+                return;
+            }
+            
+            if (emaChoice < 0 || emaChoice > 2)
+            {
+                Print("Invalid EMA choice: " + emaChoice);
+                orderServer.SendMessage("ERROR:Invalid_EMA\n");
+                return;
+            }
+            
+            if (positionSize <= 0 || positionSize > 10)
+            {
+                Print("Invalid position size: " + positionSize);
+                orderServer.SendMessage("ERROR:Invalid_Size\n");
+                return;
+            }
+            
+            // Store current trading parameters
+            currentSignal = tradeSignal;
+            currentEMA = emaChoice;
+            currentPositionSize = positionSize;
+            currentStopLoss = stopLoss;
+            currentTakeProfit = takeProfit;
+            
+            Print($"Received trade signal: Signal={tradeSignal}, EMA={emaChoice}, Size={positionSize}, " +
+                  $"SL={stopLoss.ToString("F2")}, TP={takeProfit.ToString("F2")}");
+            
+            // Execute the trading decision
+            ExecuteTradingDecision();
+            
+            // Confirm the message was processed correctly
+            orderServer.SendMessage($"ORDER_CONFIRMED:{tradeSignal},{emaChoice},{positionSize}\n");
+        }
+        #endregion
+        
+        #region Trading Execution Methods
+        private void ExecuteTradingDecision()
+        {
+            try
+            {
+                // Get current position
+                MarketPosition currentPosition = Position.MarketPosition;
+                
+                // Calculate actual position size
+                int quantity = (int)Math.Ceiling(basePositionSize * currentPositionSize);
+                quantity = Math.Max(1, quantity); // Ensure at least 1 contract
+                
+                // Calculate stop loss and take profit prices
+                double currentPrice = Close[0];
+                double stopLossPrice = 0;
+                double takeProfitPrice = 0;
+                
+                if (currentSignal == 1) // Long
+                {
+                    stopLossPrice = currentPrice - (currentStopLoss * TickSize);
+                    takeProfitPrice = currentPrice + (currentTakeProfit * TickSize);
+                }
+                else if (currentSignal == -1) // Short
+                {
+                    stopLossPrice = currentPrice + (currentStopLoss * TickSize);
+                    takeProfitPrice = currentPrice - (currentTakeProfit * TickSize);
+                }
+                
+                // Log trading decision
+                Print($"Executing trade: Signal={currentSignal}, EMA={currentEMA}, Size={quantity}, " +
+                      $"SL={stopLossPrice.ToString("F2")}, TP={takeProfitPrice.ToString("F2")}");
+                
+                // Choose between managed and unmanaged order execution based on settings
+                if (!IsUnmanaged)
+                {
+                    ExecuteManagedOrders(currentPosition, currentSignal, quantity, stopLossPrice, takeProfitPrice);
+                }
+                else
+                {
+                    ExecuteUnmanagedOrders(currentPosition, currentSignal, quantity, stopLossPrice, takeProfitPrice);
+                }
+            }
+            catch (Exception ex)
+            {
+                Print("Error executing trading decision: " + ex.Message);
+            }
+        }
+        
+        private void ExecuteManagedOrders(MarketPosition currentPosition, int signalDirection, int quantity, 
+                                         double stopLossPrice, double takeProfitPrice)
+        {
+            try
+            {
+                // Execute order based on current position and signal
+                if (currentPosition == MarketPosition.Flat)
+                {
+                    // No position, potentially enter new position
+                    if (signalDirection == 1) // Long signal
+                    {
+                        EnterLong(quantity, "RL_Long");
+                        
+                        // Set stop loss and take profit
+                        if (currentStopLoss > 0)
+                            ExitLongStopMarket(quantity, stopLossPrice, "RL_Long_SL", "RL_Long");
+                        
+                        if (currentTakeProfit > 0)
+                            ExitLongLimit(quantity, takeProfitPrice, "RL_Long_TP", "RL_Long");
+                    }
+                    else if (signalDirection == -1) // Short signal
+                    {
+                        EnterShort(quantity, "RL_Short");
+                        
+                        // Set stop loss and take profit
+                        if (currentStopLoss > 0)
+                            ExitShortStopMarket(quantity, stopLossPrice, "RL_Short_SL", "RL_Short");
+                        
+                        if (currentTakeProfit > 0)
+                            ExitShortLimit(quantity, takeProfitPrice, "RL_Short_TP", "RL_Short");
+                    }
+                    // If signal is 0, stay flat
+                }
+                else if (currentPosition == MarketPosition.Long)
+                {
+                    // Currently long
+                    if (signalDirection <= 0) // Exit signal (flat or short)
+                    {
+                        // Close all long positions
+                        ExitLong("RL_Long_Exit");
+                        
+                        // If short signal, also enter short
+                        if (signalDirection == -1)
+                        {
+                            EnterShort(quantity, "RL_Short");
                             
-                        UpdateProgressBar(percent);
+                            // Set stop loss and take profit
+                            if (currentStopLoss > 0)
+                                ExitShortStopMarket(quantity, stopLossPrice, "RL_Short_SL", "RL_Short");
+                            
+                            if (currentTakeProfit > 0)
+                                ExitShortLimit(quantity, takeProfitPrice, "RL_Short_TP", "RL_Short");
+                        }
                     }
-                    catch { }
-                });
-            }
-            catch { }
-        }
-        
-        /// <summary>
-        /// Updates just the progress bar
-        /// </summary>
-        private void UpdateProgressBar(double percent)
-        {
-            if (progressBar != null && progressBarBackground != null)
-            {
-                try
-                {
-                    // Clamp to 0-100%
-                    percent = Math.Max(0, Math.Min(100, percent));
-                    double width = (progressBarBackground.Width * percent) / 100.0;
-                    progressBar.Width = width;
+                    else
+                    {
+                        // Maintain long position but update SL/TP
+                        // First cancel existing orders
+                        ExitLong("RL_Long_SL", "RL_Long");
+                        ExitLong("RL_Long_TP", "RL_Long");
+                        
+                        // Set new orders
+                        if (currentStopLoss > 0)
+                            ExitLongStopMarket(Position.Quantity, stopLossPrice, "RL_Long_SL", "RL_Long");
+                        
+                        if (currentTakeProfit > 0)
+                            ExitLongLimit(Position.Quantity, takeProfitPrice, "RL_Long_TP", "RL_Long");
+                    }
                 }
-                catch { }
-            }
-        }
-        
-        /// <summary>
-        /// Event handler for Extract button click
-        /// </summary>
-        private void ExtractButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                if (isExtractingData)
+                else if (currentPosition == MarketPosition.Short)
                 {
-                    // If extraction is already running, don't start another one
-                    UpdateStatus("Extraction in progress...", progressPercent);
-                    return;
+                    // Currently short
+                    if (signalDirection >= 0) // Exit signal (flat or long)
+                    {
+                        // Close all short positions
+                        ExitShort("RL_Short_Exit");
+                        
+                        // If long signal, also enter long
+                        if (signalDirection == 1)
+                        {
+                            EnterLong(quantity, "RL_Long");
+                            
+                            // Set stop loss and take profit
+                            if (currentStopLoss > 0)
+                                ExitLongStopMarket(quantity, stopLossPrice, "RL_Long_SL", "RL_Long");
+                            
+                            if (currentTakeProfit > 0)
+                                ExitLongLimit(quantity, takeProfitPrice, "RL_Long_TP", "RL_Long");
+                        }
+                    }
+                    else
+                    {
+                        // Maintain short position but update SL/TP
+                        // First cancel existing orders
+                        ExitShort("RL_Short_SL", "RL_Short");
+                        ExitShort("RL_Short_TP", "RL_Short");
+                        
+                        // Set new orders
+                        if (currentStopLoss > 0)
+                            ExitShortStopMarket(Position.Quantity, stopLossPrice, "RL_Short_SL", "RL_Short");
+                        
+                        if (currentTakeProfit > 0)
+                            ExitShortLimit(Position.Quantity, takeProfitPrice, "RL_Short_TP", "RL_Short");
+                    }
                 }
-                
-                // Update UI to show we're starting extraction
-                UpdateStatus("Starting extraction...", 0);
-                
-                // Disable the button during extraction
-                if (extractButton != null)
-                    extractButton.IsEnabled = false;
-                
-                // Start the extraction process
-                StartHistoricalDataExtraction();
             }
             catch (Exception ex)
             {
-                Print($"Error handling extract button click: {ex.Message}");
-                UpdateStatus("Extraction failed", 0);
-                
-                // Re-enable button
-                if (extractButton != null)
-                    extractButton.IsEnabled = true;
+                Print($"Error executing managed orders: {ex.Message}");
+            }
+        }
+
+        private void ExecuteUnmanagedOrders(MarketPosition currentPosition, int signalDirection, int quantity, 
+                                           double stopLossPrice, double takeProfitPrice)
+        {
+            try
+            {
+                // Execute order based on current position and signal
+                if (currentPosition == MarketPosition.Flat)
+                {
+                    // No position, potentially enter new position
+                    if (signalDirection == 1) // Long signal
+                    {
+                        // Submit entry order
+                        SubmitOrderUnmanaged(0, OrderAction.Buy, OrderType.Market, quantity, 0, 0, string.Empty, "RL_Long");
+                        
+                        // Set stop loss and take profit
+                        if (currentStopLoss > 0)
+                            SubmitOrderUnmanaged(0, OrderAction.Sell, OrderType.StopMarket, quantity, 0, stopLossPrice, "RL_Long", "RL_Long_SL");
+                        
+                        if (currentTakeProfit > 0)
+                            SubmitOrderUnmanaged(0, OrderAction.Sell, OrderType.Limit, quantity, takeProfitPrice, 0, "RL_Long", "RL_Long_TP");
+                    }
+                    else if (signalDirection == -1) // Short signal
+                    {
+                        // Submit entry order
+                        SubmitOrderUnmanaged(0, OrderAction.Sell, OrderType.Market, quantity, 0, 0, string.Empty, "RL_Short");
+                        
+                        // Set stop loss and take profit
+                        if (currentStopLoss > 0)
+                            SubmitOrderUnmanaged(0, OrderAction.Buy, OrderType.StopMarket, quantity, 0, stopLossPrice, "RL_Short", "RL_Short_SL");
+                        
+                        if (currentTakeProfit > 0)
+                            SubmitOrderUnmanaged(0, OrderAction.Buy, OrderType.Limit, quantity, takeProfitPrice, 0, "RL_Short", "RL_Short_TP");
+                    }
+                    // If signal is 0, stay flat
+                }
+                else if (currentPosition == MarketPosition.Long)
+                {
+                    // Currently long
+                    if (signalDirection <= 0) // Exit signal (flat or short)
+                    {
+                        // Close all long positions
+                        SubmitOrderUnmanaged(0, OrderAction.Sell, OrderType.Market, Position.Quantity, 0, 0, string.Empty, "RL_Long_Exit");
+                        
+                        // Cancel any pending SL/TP orders
+                        CancelOrder("RL_Long_SL");
+                        CancelOrder("RL_Long_TP");
+                        
+                        // If short signal, also enter short
+                        if (signalDirection == -1)
+                        {
+                            // Submit entry order
+                            SubmitOrderUnmanaged(0, OrderAction.Sell, OrderType.Market, quantity, 0, 0, string.Empty, "RL_Short");
+                            
+                            // Set stop loss and take profit
+                            if (currentStopLoss > 0)
+                                SubmitOrderUnmanaged(0, OrderAction.Buy, OrderType.StopMarket, quantity, 0, stopLossPrice, "RL_Short", "RL_Short_SL");
+                            
+                            if (currentTakeProfit > 0)
+                                SubmitOrderUnmanaged(0, OrderAction.Buy, OrderType.Limit, quantity, takeProfitPrice, 0, "RL_Short", "RL_Short_TP");
+                        }
+                    }
+                    else
+                    {
+                        // Maintain long position but update SL/TP
+                        // First cancel existing orders
+                        CancelOrder("RL_Long_SL");
+                        CancelOrder("RL_Long_TP");
+                        
+                        // Set new orders
+                        if (currentStopLoss > 0)
+                            SubmitOrderUnmanaged(0, OrderAction.Sell, OrderType.StopMarket, Position.Quantity, 0, stopLossPrice, "RL_Long", "RL_Long_SL");
+                        
+                        if (currentTakeProfit > 0)
+                            SubmitOrderUnmanaged(0, OrderAction.Sell, OrderType.Limit, Position.Quantity, takeProfitPrice, 0, "RL_Long", "RL_Long_TP");
+                    }
+                }
+                else if (currentPosition == MarketPosition.Short)
+                {
+                    // Currently short
+                    if (signalDirection >= 0) // Exit signal (flat or long)
+                    {
+                        // Close all short positions
+                        SubmitOrderUnmanaged(0, OrderAction.Buy, OrderType.Market, Position.Quantity, 0, 0, string.Empty, "RL_Short_Exit");
+                        
+                        // Cancel any pending SL/TP orders
+                        CancelOrder("RL_Short_SL");
+                        CancelOrder("RL_Short_TP");
+                        
+                        // If long signal, also enter long
+                        if (signalDirection == 1)
+                        {
+                            // Submit entry order
+                            SubmitOrderUnmanaged(0, OrderAction.Buy, OrderType.Market, quantity, 0, 0, string.Empty, "RL_Long");
+                            
+                            // Set stop loss and take profit
+                            if (currentStopLoss > 0)
+                                SubmitOrderUnmanaged(0, OrderAction.Sell, OrderType.StopMarket, quantity, 0, stopLossPrice, "RL_Long", "RL_Long_SL");
+                            
+                            if (currentTakeProfit > 0)
+                                SubmitOrderUnmanaged(0, OrderAction.Sell, OrderType.Limit, quantity, takeProfitPrice, 0, "RL_Long", "RL_Long_TP");
+                        }
+                    }
+                    else
+                    {
+                        // Maintain short position but update SL/TP
+                        // First cancel existing orders
+                        CancelOrder("RL_Short_SL");
+                        CancelOrder("RL_Short_TP");
+                        
+                        // Set new orders
+                        if (currentStopLoss > 0)
+                            SubmitOrderUnmanaged(0, OrderAction.Buy, OrderType.StopMarket, Position.Quantity, 0, stopLossPrice, "RL_Short", "RL_Short_SL");
+                        
+                        if (currentTakeProfit > 0)
+                            SubmitOrderUnmanaged(0, OrderAction.Buy, OrderType.Limit, Position.Quantity, takeProfitPrice, 0, "RL_Short", "RL_Short_TP");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"Error executing unmanaged orders: {ex.Message}");
+            }
+        }
+
+        // Helper method to cancel orders by name
+        private void CancelOrder(string orderName)
+        {
+            foreach (Order order in Orders)
+            {
+                if (order.Name == orderName && order.OrderState != OrderState.Filled && order.OrderState != OrderState.Cancelled)
+                {
+                    try
+                    {
+                        CancelOrder(order);
+                    }
+                    catch (Exception ex)
+                    {
+                        Print($"Error cancelling order {orderName}: {ex.Message}");
+                    }
+                }
             }
         }
         #endregion
         
-        #region Data Extraction Methods
-        /// <summary>
-        /// Starts extraction of historical data to CSV
-        /// </summary>
-        public void StartHistoricalDataExtraction(int requestedBars = 0)
+        #region Order Event Handlers
+        protected override void OnExecutionUpdate(Execution execution, string executionId, double price, int quantity, MarketPosition marketPosition, string orderId, DateTime time)
         {
             try
             {
-                // Don't start a new extraction if one is already running
-                if (isExtractingData)
+                // Log execution details
+                Print($"Order executed: {marketPosition} {quantity} @ {price:F2}, OrderId: {orderId}");
+                
+                // Determine action and P&L
+                string action = "";
+                double entryPrice = 0;
+                double exitPrice = 0;
+                double pnl = 0;
+                
+                // Check the order name to determine the action
+                if (orderId.Contains("RL_Long") && !orderId.Contains("Exit") && !orderId.Contains("SL") && !orderId.Contains("TP"))
                 {
-                    Print("Historical data extraction already in progress");
-                    return;
+                    action = "Enter Long";
+                    entryPrice = price;
                 }
-                
-                // Ensure we're in realtime mode for extraction
-                if (State != State.Realtime && State != State.Historical)
+                else if (orderId.Contains("RL_Short") && !orderId.Contains("Exit") && !orderId.Contains("SL") && !orderId.Contains("TP"))
                 {
-                    Print($"ERROR: Indicator must be in Realtime or Historical state for extraction. Current state: {State}");
-                    UpdateStatus("Error: Incorrect state", 0);
-                    return;
+                    action = "Enter Short";
+                    entryPrice = price;
                 }
-                
-                // Make sure any previous resources are cleaned up
-                CompleteExtraction();
-                
-                // Check if indicators are ready
-                bool hasValidIndicators = (emaShort != null && emaLong != null && atr != null && adx != null);
-                
-                if (!hasValidIndicators)
+                else if (orderId.Contains("Exit") || orderId.Contains("SL") || orderId.Contains("TP"))
                 {
-                    Print("ERROR: Required indicators not initialized. Cannot extract data.");
-                    UpdateStatus("Error: Indicators not ready", 0);
-                    return;
-                }
-                
-                // Validate that we have enough bars
-                int barsAvailable = CurrentBar + 1;
-                Print($"Total bars available in chart: {barsAvailable}");
-                
-                if (barsAvailable < 20)
-                {
-                    Print("ERROR: Not enough bars loaded in chart. Need at least 20 bars.");
-                    UpdateStatus("Error: Not enough bars", 0);
-                    return;
-                }
-                
-                // Determine number of bars to extract
-                int barsRequested = requestedBars > 0 ? requestedBars : MaxHistoricalBars;
-                int barsToExtract = Math.Min(barsRequested, barsAvailable);
-                
-                // Limit to a reasonable number to prevent errors
-                if (barsToExtract > 3000)
-                {
-                    Print($"WARNING: Limiting extraction to 3000 bars (requested {barsToExtract}) for performance.");
-                    barsToExtract = 3000;
-                }
-                
-                // Prepare CSV file
-                string instrumentName = Instrument.MasterInstrument.Name;
-                PrepareCSVFile(instrumentName);
-                
-                if (csvWriter == null)
-                {
-                    Print("ERROR: Failed to create CSV file. Cannot extract data.");
-                    UpdateStatus("Error: Failed to create file", 0);
-                    return;
-                }
-                
-                // Initialize extraction state
-                isExtractingData = true;
-                isExtractionComplete = false;
-                totalBarsToExtract = barsToExtract;
-                extractedBarsCount = 0;
-                
-                Print($"Starting extraction of {totalBarsToExtract} historical bars for {instrumentName}...");
-                UpdateStatus("Extracting data...", 0);
-                
-                // Process the first batch
-                this.Dispatcher.InvokeAsync(() => {
-                    try {
-                        ProcessHistoricalBatch();
-                    }
-                    catch (Exception ex) {
-                        Print($"ERROR: Exception starting extraction: {ex.Message}");
-                        CompleteExtraction();
-                    }
-                });
-            }
-            catch (Exception ex)
-            {
-                Print($"ERROR: Failed to start historical data extraction: {ex.Message}");
-                isExtractingData = false;
-                isExtractionComplete = true;
-                UpdateStatus("Extraction failed", 0);
-                
-                // Re-enable the button
-                if (extractButton != null)
-                    extractButton.IsEnabled = true;
-            }
-        }
-        
-        /// <summary>
-        /// Prepares the CSV file for extraction
-        /// </summary>
-        private void PrepareCSVFile(string instrumentName)
-        {
-            try
-            {
-                // Make sure the export directory exists
-                string exportDir = ExportFolderPath;
-                if (!Directory.Exists(exportDir))
-                {
-                    try
+                    // This is an exit order
+                    if (orderId.Contains("Long"))
                     {
-                        Directory.CreateDirectory(exportDir);
-                    }
-                    catch (Exception ex)
-                    {
-                        Print($"ERROR: Failed to create export directory: {ex.Message}");
-                        return;
-                    }
-                }
-                
-                // Ensure any previous writer is closed
-                CloseCSVFile();
-                
-                // Create the CSV file path with timestamp
-                string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                string fileName = $"{instrumentName}_{timestamp}.csv";
-                csvFilePath = System.IO.Path.Combine(exportDir, fileName);
-                
-                // Check if file exists and is locked - delete if needed
-                if (File.Exists(csvFilePath))
-                {
-                    try
-                    {
-                        // Try to delete the file if it exists
-                        File.Delete(csvFilePath);
-                    }
-                    catch (Exception fileEx)
-                    {
-                        Print($"WARNING: Could not delete existing file: {fileEx.Message}");
-                        // If we can't delete, use a new filename
-                        timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
-                        fileName = $"{instrumentName}_{timestamp}.csv";
-                        csvFilePath = System.IO.Path.Combine(exportDir, fileName);
-                    }
-                }
-                
-                // Create and initialize the CSV file with headers
-                csvWriter = new StreamWriter(csvFilePath, false, Encoding.UTF8);
-                
-                // Write header row - using lowercase column names to match Python expectations
-                csvWriter.WriteLine("instrument,datetime,open,high,low,close,ema_short,ema_long,atr,adx,rsi,bb_upper,bb_middle,bb_lower,macd,macd_signal,macd_hist,volume,date_value");
-                csvWriter.Flush();
-                
-                Print($"Created CSV file: {csvFilePath}");
-            }
-            catch (Exception ex)
-            {
-                Print($"ERROR: Failed to prepare CSV file: {ex.Message}");
-                csvWriter = null;
-            }
-        }
-        
-        /// <summary>
-        /// Closes the CSV file and releases resources
-        /// </summary>
-        private void CloseCSVFile()
-        {
-            if (csvWriter != null)
-            {
-                try
-                {
-                    csvWriter.Flush();
-                    csvWriter.Close();
-                    csvWriter.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    Print($"WARNING: Error closing CSV file: {ex.Message}");
-                }
-                finally
-                {
-                    csvWriter = null;
-                }
-            }
-        }
-        
-        /// <summary>
-        /// Process a batch of historical bars for extraction
-        /// </summary>
-        private void ProcessHistoricalBatch()
-        {
-            // Check if extraction is complete
-            if (extractedBarsCount >= totalBarsToExtract || !isExtractingData || csvWriter == null)
-            {
-                CompleteExtraction();
-                return;
-            }
-            
-            // Verify that we have enough bars
-            if (CurrentBar < 20)
-            {
-                Print("ERROR: Not enough bars available for extraction");
-                CompleteExtraction();
-                return;
-            }
-            
-            // Set batch size for processing
-            int batchSize = 25; // Process 25 bars at a time
-            int remainingBars = totalBarsToExtract - extractedBarsCount;
-            int barsToProcess = Math.Min(batchSize, remainingBars);
-            int processedInBatch = 0;
-            
-            // Make sure we're not trying to extract more bars than we have
-            int availableBars = CurrentBar + 1;
-            if (totalBarsToExtract > availableBars)
-            {
-                Print($"WARNING: Requested {totalBarsToExtract} bars but only {availableBars} are available. Adjusting.");
-                totalBarsToExtract = availableBars;
-                remainingBars = totalBarsToExtract - extractedBarsCount;
-                barsToProcess = Math.Min(batchSize, remainingBars);
-            }
-            
-            // Safety check
-            if (barsToProcess <= 0)
-            {
-                Print("No more bars to process. Completing extraction.");
-                CompleteExtraction();
-                return;
-            }
-            
-            // Calculate starting bar index - we extract from oldest to newest
-            int startBarsAgo = Math.Min(CurrentBar, totalBarsToExtract - extractedBarsCount);
-            
-            // Process each bar in this batch
-            for (int i = 0; i < barsToProcess && (startBarsAgo - i) >= 0; i++)
-            {
-                int barsAgo = startBarsAgo - i;
-                
-                try
-                {
-                    // Format and write bar data
-                    string barData = FormatBarDataForCSV(barsAgo);
-                    if (!string.IsNullOrEmpty(barData))
-                    {
-                        csvWriter.WriteLine(barData);
-                        processedInBatch++;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Print($"Error processing bar with barsAgo={barsAgo}: {ex.Message}");
-                }
-            }
-            
-            // Ensure data is written to disk
-            try
-            {
-                if (csvWriter != null)
-                {
-                    csvWriter.Flush();
-                }
-            }
-            catch (Exception ex)
-            {
-                Print($"WARNING: Error flushing CSV data: {ex.Message}");
-            }
-            
-            // Update progress
-            extractedBarsCount += processedInBatch;
-            progressPercent = (double)extractedBarsCount / totalBarsToExtract * 100;
-            
-            // Update status text and progress bar
-            UpdateStatus($"Extracting: {extractedBarsCount}/{totalBarsToExtract}", progressPercent);
-            
-            Print($"Extraction progress: {progressPercent:F1}% ({extractedBarsCount}/{totalBarsToExtract}, processed {processedInBatch} bars in this batch)");
-            
-            // Check if complete
-            if (extractedBarsCount >= totalBarsToExtract || processedInBatch == 0)
-            {
-                if (processedInBatch == 0 && extractedBarsCount < totalBarsToExtract)
-                {
-                    Print("WARNING: No bars processed in latest batch, completing extraction early.");
-                }
-                CompleteExtraction();
-            }
-            else
-            {
-                // Schedule the next batch with a short delay
-                Thread.Sleep(10);
-                try
-                {
-                    this.Dispatcher.InvokeAsync(() => ProcessHistoricalBatch());
-                }
-                catch (Exception ex)
-                {
-                    Print($"ERROR: Failed to schedule next batch: {ex.Message}");
-                    CompleteExtraction();
-                }
-            }
-        }
-        
-        /// <summary>
-        /// Completes the extraction process
-        /// </summary>
-        private void CompleteExtraction()
-        {
-            if (!isExtractionComplete)
-            {
-                isExtractionComplete = true;
-                isExtractingData = false;
-                
-                // Close the CSV file
-                if (csvWriter != null)
-                {
-                    try
-                    {
-                        csvWriter.Flush();
-                        csvWriter.Close();
-                        csvWriter.Dispose();
+                        action = "Exit Long";
+                        exitPrice = price;
                         
-                        string instrumentName = Instrument.MasterInstrument.Name;
-                        Print($"Historical data extraction completed for {instrumentName}: {extractedBarsCount} bars exported to {csvFilePath}");
+                        // Calculate P&L for long position
+                        double positionEntryPrice = Position.AveragePrice;
+                        pnl = (exitPrice - positionEntryPrice) * quantity * Instrument.MasterInstrument.PointValue;
+                    }
+                    else if (orderId.Contains("Short"))
+                    {
+                        action = "Exit Short";
+                        exitPrice = price;
                         
-                        // Update UI with completion status
-                        UpdateStatus($"Completed: {extractedBarsCount} bars", 100);
-                    }
-                    catch (Exception ex)
-                    {
-                        Print($"WARNING: Error closing CSV file: {ex.Message}");
-                        UpdateStatus("Error completing extraction", progressPercent);
-                    }
-                    finally
-                    {
-                        csvWriter = null;
+                        // Calculate P&L for short position
+                        double positionEntryPrice = Position.AveragePrice;
+                        pnl = (positionEntryPrice - exitPrice) * quantity * Instrument.MasterInstrument.PointValue;
                     }
                 }
                 
-                // Re-enable the extract button
-                if (extractButton != null)
+                // Send execution data to Python
+                if (!string.IsNullOrEmpty(action))
                 {
-                    ChartControl.Dispatcher.InvokeAsync(() => {
-                        extractButton.IsEnabled = true;
-                    });
+                    string executionMessage = $"TRADE_EXECUTED:{action},{entryPrice},{exitPrice},{pnl},{quantity}\n";
+                    orderServer.SendMessage(executionMessage);
+                    Print($"Sent trade execution data: {action}, P&L: {pnl}");
                 }
-            }
-        }
-        
-        /// <summary>
-        /// Formats a single bar's data for CSV export
-        /// </summary>
-        private string FormatBarDataForCSV(int barsAgo)
-        {
-            try
-            {
-                // Double check bar index to prevent out of range errors
-                if (barsAgo < 0 || barsAgo > CurrentBar)
-                {
-                    Print($"WARNING: Invalid barsAgo={barsAgo} (Current bar: {CurrentBar})");
-                    return null;
-                }
-                
-                // Safety check for accessing time data
-                DateTime barTime;
-                try
-                {
-                    barTime = Time[barsAgo];
-                }
-                catch (Exception ex)
-                {
-                    Print($"ERROR: Cannot access Time at index {barsAgo}: {ex.Message}");
-                    return null;
-                }
-                
-                // Get instrument name
-                string instrumentName = Instrument.MasterInstrument.Name;
-                
-                // Format date/time
-                string formattedDateTime = barTime.ToString("yyyy-MM-dd HH:mm:ss");
-                double dateValue = barTime.ToOADate();
-                
-                // Get OHLC data with safety checks
-                double openValue, highValue, lowValue, closeValue, volume;
-                
-                try
-                {
-                    openValue = Open[barsAgo];
-                    highValue = High[barsAgo];
-                    lowValue = Low[barsAgo];
-                    closeValue = Close[barsAgo];
-                    volume = Volume[barsAgo];
-                }
-                catch (Exception ex)
-                {
-                    Print($"ERROR: Cannot access price data at index {barsAgo}: {ex.Message}");
-                    return null;
-                }
-                
-                // Get indicator values - handle exceptions for each indicator separately
-                double emaShortValue, emaLongValue, atrValue, adxValue, rsiValue, bbuValue, bbmValue, bblValue;
-                double macdValue, macdSignalValue, macdHistValue;
-                
-                try { emaShortValue = emaShort != null && emaShort.IsValidDataPoint(barsAgo) ? emaShort[barsAgo] : closeValue; }
-                catch (Exception) { emaShortValue = closeValue; }
-                
-                try { emaLongValue = emaLong != null && emaLong.IsValidDataPoint(barsAgo) ? emaLong[barsAgo] : closeValue * 0.98; }
-                catch (Exception) { emaLongValue = closeValue * 0.98; }
-                
-                try { atrValue = atr != null && atr.IsValidDataPoint(barsAgo) ? atr[barsAgo] : (highValue - lowValue) * 0.5; }
-                catch (Exception) { atrValue = (highValue - lowValue) * 0.5; }
-                
-                try { adxValue = adx != null && adx.IsValidDataPoint(barsAgo) ? adx[barsAgo] : 25.0; }
-                catch (Exception) { adxValue = 25.0; }
-                
-                try { rsiValue = rsi != null && rsi.IsValidDataPoint(barsAgo) ? rsi[barsAgo] : 50.0; }
-                catch (Exception) { rsiValue = 50.0; }
-                
-                try { bbuValue = bollinger != null && bollinger.Upper.IsValidDataPoint(barsAgo) ? bollinger.Upper[barsAgo] : closeValue * 1.02; }
-                catch (Exception) { bbuValue = closeValue * 1.02; }
-                
-                try { bbmValue = bollinger != null && bollinger.Middle.IsValidDataPoint(barsAgo) ? bollinger.Middle[barsAgo] : closeValue; }
-                catch (Exception) { bbmValue = closeValue; }
-                
-                try { bblValue = bollinger != null && bollinger.Lower.IsValidDataPoint(barsAgo) ? bollinger.Lower[barsAgo] : closeValue * 0.98; }
-                catch (Exception) { bblValue = closeValue * 0.98; }
-                
-                try { macdValue = macd != null && macd.Default.IsValidDataPoint(barsAgo) ? macd.Default[barsAgo] : 0.0; }
-                catch (Exception) { macdValue = 0.0; }
-                
-                try { macdSignalValue = macd != null && macd.Avg.IsValidDataPoint(barsAgo) ? macd.Avg[barsAgo] : 0.0; }
-                catch (Exception) { macdSignalValue = 0.0; }
-                
-                try { macdHistValue = macd != null && macd.Diff.IsValidDataPoint(barsAgo) ? macd.Diff[barsAgo] : 0.0; }
-                catch (Exception) { macdHistValue = 0.0; }
-                
-                // Format as CSV (no header) - using lowercase names to match Python expectations
-                return string.Format("{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11},{12},{13},{14},{15},{16},{17},{18}",
-                    instrumentName,
-                    formattedDateTime,
-                    openValue.ToString("F2"),      // open
-                    highValue.ToString("F2"),      // high
-                    lowValue.ToString("F2"),       // low
-                    closeValue.ToString("F2"),     // close
-                    emaShortValue.ToString("F2"),  // ema_short
-                    emaLongValue.ToString("F2"),   // ema_long
-                    atrValue.ToString("F2"),       // atr
-                    adxValue.ToString("F2"),       // adx
-                    rsiValue.ToString("F2"),       // rsi
-                    bbuValue.ToString("F2"),       // bb_upper
-                    bbmValue.ToString("F2"),       // bb_middle
-                    bblValue.ToString("F2"),       // bb_lower
-                    macdValue.ToString("F4"),      // macd
-                    macdSignalValue.ToString("F4"),// macd_signal
-                    macdHistValue.ToString("F4"),  // macd_hist
-                    volume.ToString("F0"),         // volume
-                    dateValue.ToString());         // date_value
             }
             catch (Exception ex)
             {
-                Print($"Error formatting bar data for CSV: {ex.Message}");
-                return null;
+                Print($"Error in OnExecutionUpdate: {ex.Message}");
+            }
+        }
+
+        protected override void OnOrderUpdate(Order order, double limitPrice, double stopPrice, int quantity, int filled, double averageFillPrice, OrderState orderState, DateTime time, ErrorCode error, string comment)
+        {
+            try
+            {
+                if (error != ErrorCode.NoError)
+                {
+                    Print($"Order error: {error}, OrderId: {order.Id}, Comment: {comment}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"Error in OnOrderUpdate: {ex.Message}");
             }
         }
         #endregion
-        
-        public override string ToString()
-        {
-            string status = " [";
-            
-            if (isExtractingData)
-                status += $"Extracting: {extractedBarsCount}/{totalBarsToExtract}";
-            else if (isExtractionComplete)
-                status += "Extraction Complete";
-            else
-                status += "Ready";
-                
-            status += "]";
-            
-            return Name + status;
-        }
     }
 }
-
-#region NinjaScript generated code. Neither change nor remove.
-
-namespace NinjaTrader.NinjaScript.Indicators
-{
-    public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
-    {
-        private RLLink[] cacheRLLink;
-        public RLLink RLLink(string exportFolderPath, int eMAShortPeriod, int eMALongPeriod, int aTRPeriod, int aDXPeriod, int rSIPeriod, int bollingerPeriod, double bollingerStdDev, int mACDFast, int mACDSlow, int mACDSignal, int maxHistoricalBars, bool showControlPanel)
-        {
-            return RLLink(Input, exportFolderPath, eMAShortPeriod, eMALongPeriod, aTRPeriod, aDXPeriod, rSIPeriod, bollingerPeriod, bollingerStdDev, mACDFast, mACDSlow, mACDSignal, maxHistoricalBars, showControlPanel);
-        }
-
-        public RLLink RLLink(ISeries<double> input, string exportFolderPath, int eMAShortPeriod, int eMALongPeriod, int aTRPeriod, int aDXPeriod, int rSIPeriod, int bollingerPeriod, double bollingerStdDev, int mACDFast, int mACDSlow, int mACDSignal, int maxHistoricalBars, bool showControlPanel)
-        {
-            if (cacheRLLink != null)
-                for (int idx = 0; idx < cacheRLLink.Length; idx++)
-                    if (cacheRLLink[idx] != null && cacheRLLink[idx].ExportFolderPath == exportFolderPath && cacheRLLink[idx].EMAShortPeriod == eMAShortPeriod && cacheRLLink[idx].EMALongPeriod == eMALongPeriod && cacheRLLink[idx].ATRPeriod == aTRPeriod && cacheRLLink[idx].ADXPeriod == aDXPeriod && cacheRLLink[idx].RSIPeriod == rSIPeriod && cacheRLLink[idx].BollingerPeriod == bollingerPeriod && cacheRLLink[idx].BollingerStdDev == bollingerStdDev && cacheRLLink[idx].MACDFast == mACDFast && cacheRLLink[idx].MACDSlow == mACDSlow && cacheRLLink[idx].MACDSignal == mACDSignal && cacheRLLink[idx].MaxHistoricalBars == maxHistoricalBars && cacheRLLink[idx].ShowControlPanel == showControlPanel && cacheRLLink[idx].EqualsInput(input))
-                        return cacheRLLink[idx];
-            return CacheIndicator<RLLink>(new RLLink(){ ExportFolderPath = exportFolderPath, EMAShortPeriod = eMAShortPeriod, EMALongPeriod = eMALongPeriod, ATRPeriod = aTRPeriod, ADXPeriod = aDXPeriod, RSIPeriod = rSIPeriod, BollingerPeriod = bollingerPeriod, BollingerStdDev = bollingerStdDev, MACDFast = mACDFast, MACDSlow = mACDSlow, MACDSignal = mACDSignal, MaxHistoricalBars = maxHistoricalBars, ShowControlPanel = showControlPanel }, input, ref cacheRLLink);
-        }
-    }
-}
-
-namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
-{
-    public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
-    {
-        public Indicators.RLLink RLLink(string exportFolderPath, int eMAShortPeriod, int eMALongPeriod, int aTRPeriod, int aDXPeriod, int rSIPeriod, int bollingerPeriod, double bollingerStdDev, int mACDFast, int mACDSlow, int mACDSignal, int maxHistoricalBars, bool showControlPanel)
-        {
-            return indicator.RLLink(Input, exportFolderPath, eMAShortPeriod, eMALongPeriod, aTRPeriod, aDXPeriod, rSIPeriod, bollingerPeriod, bollingerStdDev, mACDFast, mACDSlow, mACDSignal, maxHistoricalBars, showControlPanel);
-        }
-
-        public Indicators.RLLink RLLink(ISeries<double> input , string exportFolderPath, int eMAShortPeriod, int eMALongPeriod, int aTRPeriod, int aDXPeriod, int rSIPeriod, int bollingerPeriod, double bollingerStdDev, int mACDFast, int mACDSlow, int mACDSignal, int maxHistoricalBars, bool showControlPanel)
-        {
-            return indicator.RLLink(input, exportFolderPath, eMAShortPeriod, eMALongPeriod, aTRPeriod, aDXPeriod, rSIPeriod, bollingerPeriod, bollingerStdDev, mACDFast, mACDSlow, mACDSignal, maxHistoricalBars, showControlPanel);
-        }
-    }
-}
-
-namespace NinjaTrader.NinjaScript.Strategies
-{
-    public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
-    {
-        public Indicators.RLLink RLLink(string exportFolderPath, int eMAShortPeriod, int eMALongPeriod, int aTRPeriod, int aDXPeriod, int rSIPeriod, int bollingerPeriod, double bollingerStdDev, int mACDFast, int mACDSlow, int mACDSignal, int maxHistoricalBars, bool showControlPanel)
-        {
-            return indicator.RLLink(Input, exportFolderPath, eMAShortPeriod, eMALongPeriod, aTRPeriod, aDXPeriod, rSIPeriod, bollingerPeriod, bollingerStdDev, mACDFast, mACDSlow, mACDSignal, maxHistoricalBars, showControlPanel);
-        }
-
-        public Indicators.RLLink RLLink(ISeries<double> input , string exportFolderPath, int eMAShortPeriod, int eMALongPeriod, int aTRPeriod, int aDXPeriod, int rSIPeriod, int bollingerPeriod, double bollingerStdDev, int mACDFast, int mACDSlow, int mACDSignal, int maxHistoricalBars, bool showControlPanel)
-        {
-            return indicator.RLLink(input, exportFolderPath, eMAShortPeriod, eMALongPeriod, aTRPeriod, aDXPeriod, rSIPeriod, bollingerPeriod, bollingerStdDev, mACDFast, mACDSlow, mACDSignal, maxHistoricalBars, showControlPanel);
-        }
-    }
-}
-
-#endregion

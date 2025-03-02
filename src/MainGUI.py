@@ -352,11 +352,19 @@ class MainApplication(tk.Frame):
         # Inicializar datos de simulación
         self.initialize_simulation()
         
-    def extract_data_from_ninjatrader(self):
+    def extract_data_from_ninjatrader(self, bars_to_extract=5000):
         """Extrae datos históricos de NinjaTrader"""
         if not self.connected:
             messagebox.showwarning("No conectado", "Debe conectarse a NinjaTrader primero")
             return
+            
+        # Validar que sea un número positivo razonable
+        try:
+            bars_to_extract = int(bars_to_extract)
+            if bars_to_extract <= 0:
+                bars_to_extract = 5000  # Valor predeterminado si es inválido
+        except (ValueError, TypeError):
+            bars_to_extract = 5000  # Valor predeterminado si hay error
         
         # Mostrar ventana de progreso
         progress_window = tk.Toplevel(self.parent)
@@ -460,7 +468,11 @@ class MainApplication(tk.Frame):
         # Iniciar proceso de extracción
         def extraction_thread():
             try:
-                self.nt_interface.request_historical_data(callback=update_extraction_progress)
+                # Pasar el parámetro de barras a extraer
+                self.nt_interface.request_historical_data(
+                    callback=update_extraction_progress,
+                    bars_count=bars_to_extract
+                )
                 
                 # Esperar a que inicie la extracción (puede tomar un momento)
                 wait_time = 0

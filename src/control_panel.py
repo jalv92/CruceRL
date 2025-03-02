@@ -16,6 +16,7 @@ class ControlPanel(BasePanel):
         self.on_extract_data = on_extract_data
         self.paused = False
         self.progress_value = 0
+        self.tooltip_windows = {}  # Para guardar referencias a las ventanas de tooltip
         self.setup_ui()
     
     def setup_ui(self):
@@ -85,6 +86,25 @@ class ControlPanel(BasePanel):
         )
         self.disconnect_button.pack(side=tk.LEFT, padx=(0,10), pady=5)
 
+        # Campo para definir la cantidad de barras a extraer
+        tk.Label(
+            server_frame, text="Bars to Extract:",
+            bg=COLORS['bg_dark'], fg=COLORS['fg_light'],
+            font=('Segoe UI', 10)
+        ).pack(side=tk.LEFT, padx=(10,5), pady=5)
+        
+        self.bars_to_extract_var = tk.StringVar(value="5000")
+        self.bars_to_extract_entry = tk.Entry(
+            server_frame, textvariable=self.bars_to_extract_var,
+            bg=COLORS['bg_medium'], fg=COLORS['fg_white'],
+            insertbackground=COLORS['fg_white'], relief=tk.FLAT,
+            bd=0, width=6, highlightthickness=1,
+            highlightbackground=COLORS['border']
+        )
+        self.bars_to_extract_entry.pack(side=tk.LEFT, padx=(0,10), pady=5)
+        # Agregar tooltip para el campo
+        self._create_tooltip(self.bars_to_extract_entry, "Cantidad de barras históricas a extraer")
+        
         # Nuevo botón para extraer datos
         self.extract_data_button = tk.Button(
             server_frame, text="Extract Data",
@@ -95,7 +115,7 @@ class ControlPanel(BasePanel):
             font=('Segoe UI', 10),
             relief=tk.FLAT, bd=0, padx=10
         )
-        self.extract_data_button.pack(side=tk.LEFT, padx=(10,0), pady=5)
+        self.extract_data_button.pack(side=tk.LEFT, padx=(0,0), pady=5)
 
         # Frame para el modo de operación
         mode_frame = tk.Frame(container, bg=COLORS['bg_dark'])
@@ -245,7 +265,13 @@ class ControlPanel(BasePanel):
         self.on_train_config()
     
     def _on_extract_data_click(self):
-        self.on_extract_data()
+        try:
+            bars_to_extract = int(self.bars_to_extract_var.get())
+            self.on_extract_data(bars_to_extract)
+        except ValueError:
+            # Si el valor no es un número válido, usar el valor predeterminado
+            self.bars_to_extract_var.set("5000")
+            self.on_extract_data(5000)
     
     def _on_mode_change(self, event=None):
         self._update_button_visibility()
@@ -323,3 +349,49 @@ class ControlPanel(BasePanel):
         self.progress_value = 0
         self.progress_text.set("0%")
         self.progress_canvas.coords(self.progress_rect, 0, 0, 0, 20)
+        
+    def _create_tooltip(self, widget, text):
+        """Crea un tooltip para el widget dado"""
+        def enter(event):
+            # Crear una ventana flotante para el tooltip
+            x, y, _, _ = widget.bbox("insert")
+            x += widget.winfo_rootx() + 25
+            y += widget.winfo_rooty() + 25
+            
+            # Eliminar el tooltip si ya existe
+            self._hide_tooltip()
+            
+            # Crear ventana
+            tw = tk.Toplevel(widget)
+            tw.wm_overrideredirect(True)  # Sin bordes ni título
+            tw.wm_geometry(f"+{x}+{y}")
+            
+            # Crear una etiqueta con el texto del tooltip
+            label = tk.Label(
+                tw, text=text, justify=tk.LEFT,
+                background=COLORS['bg_dark'], 
+                foreground=COLORS['fg_light'],
+                relief=tk.SOLID, borderwidth=1,
+                font=("Segoe UI", 9),
+                padx=5, pady=2
+            )
+            label.pack()
+            
+            # Guardar referencia para poder destruirlo después
+            self.tooltip_windows[widget] = tw
+        
+        def leave(event):
+            self._hide_tooltip()
+        
+        # Vincular eventos de ratón
+        widget.bind("<Enter>", enter)
+        widget.bind("<Leave>", leave)
+        
+    def _hide_tooltip(self):
+        """Oculta el tooltip actual"""
+        for tooltip in self.tooltip_windows.values():
+            try:
+                tooltip.destroy()
+            except:
+                pass
+        self.tooltip_windows.clear()

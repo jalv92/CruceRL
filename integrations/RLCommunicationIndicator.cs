@@ -747,11 +747,25 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Print("Received order message: " + message);
                 
                 // Check for special command messages
-                if (message.StartsWith(extractionCommand) || message.Equals("EXTRACT_HISTORICAL_DATA"))
+                if (message.StartsWith(extractionCommand))
                 {
+                    // Verificar si se especificó la cantidad de barras
+                    int barsToExtract = MaxHistoricalBars;  // Valor predeterminado
+                    
+                    // Extraer la cantidad de barras del comando si está presente
+                    if (message.Contains(":"))
+                    {
+                        string[] parts = message.Split(':');
+                        if (parts.Length > 1 && int.TryParse(parts[1], out int requestedBars))
+                        {
+                            barsToExtract = requestedBars;
+                            Print($"Requested to extract {barsToExtract} bars");
+                        }
+                    }
+                    
                     // Handle data extraction command
                     Print("Received data extraction command from Python. Starting extraction...");
-                    this.Dispatcher.InvokeAsync(() => StartHistoricalDataExtraction());
+                    this.Dispatcher.InvokeAsync(() => StartHistoricalDataExtraction(barsToExtract));
                     return;
                 }
                 
@@ -759,6 +773,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (message.StartsWith("EXISTING_DATA_CHECK:") || message.Equals("EXTRACT_HISTORICAL_DATA"))
                 {
                     string instrumentName = "Unknown";
+                    int requestedBars = MaxHistoricalBars;  // Valor predeterminado
+                    
                     if (message.StartsWith("EXISTING_DATA_CHECK:"))
                     {
                         string[] dataParts = message.Split(':');
@@ -767,11 +783,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                             instrumentName = dataParts[1];
                         }
                     }
+                    else if (message.StartsWith("EXTRACT_HISTORICAL_DATA:"))
+                    {
+                        string[] dataParts = message.Split(':');
+                        if (dataParts.Length > 1 && int.TryParse(dataParts[1], out int parsedBars))
+                        {
+                            requestedBars = parsedBars;
+                        }
+                    }
                     
                     // Start historical data extraction 
                     this.Dispatcher.InvokeAsync(() => {
-                        Print($"Python client requested historical data for {instrumentName}");
-                        StartHistoricalDataExtraction();
+                        Print($"Python client requested {requestedBars} historical bars for {instrumentName}");
+                        StartHistoricalDataExtraction(requestedBars);
                     });
                     
                     return;
@@ -917,13 +941,49 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (parts.Length > 1)
                     {
                         string instrumentName = parts[1].Trim();
-                        orderServer.SendMessage($"NO_EXISTING_DATA:{instrumentName}\n");
+                        
+                        // Comprobar si tenemos indicadores válidos antes de confirmar
+                        bool hasValidIndicators = false;
+                        for (int i = 0; i <= Math.Min(50, CurrentBar); i++)
+                        {
+                            if (emaShort.IsValidDataPoint(i) && emaLong.IsValidDataPoint(i) && 
+                                atr.IsValidDataPoint(i) && adx.IsValidDataPoint(i))
+                            {
+                                hasValidIndicators = true;
+                                break;
+                            }
+                        }
+                        
+                        if (hasValidIndicators)
+                        {
+                            Print($"Responding to CHECK_EXISTING_DATA: Indicators are valid for {instrumentName}");
+                            orderServer.SendMessage($"NO_EXISTING_DATA:{instrumentName}\n");
+                        }
+                        else
+                        {
+                            Print($"Warning: No valid indicators found for {instrumentName}. Indicators may need warmup period.");
+                            orderServer.SendMessage($"INDICATORS_NOT_READY:{instrumentName}\n");
+                        }
                     }
                 }
-                else if (message.Equals(extractionCommand))
+                else if (message.StartsWith("FORCE_EXTRACTION") || message.Equals(extractionCommand))
                 {
-                    // Start historical data extraction
-                    this.Dispatcher.InvokeAsync(() => StartHistoricalDataExtraction());
+                    // Si es FORCE_EXTRACTION, extraer ignorando validaciones de indicadores
+                    bool forceExtraction = message.StartsWith("FORCE_EXTRACTION");
+                    int requestedBars = 0;
+                    
+                    // Intentar extraer números de barras del comando
+                    if (message.Contains(":"))
+                    {
+                        string[] parts = message.Split(':');
+                        if (parts.Length > 1 && int.TryParse(parts[1], out int bars))
+                        {
+                            requestedBars = bars;
+                        }
+                    }
+                    
+                    // Start historical data extraction with requested bars
+                    this.Dispatcher.InvokeAsync(() => StartHistoricalDataExtraction(requestedBars));
                 }
             }
             catch (Exception ex)
@@ -934,7 +994,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         #endregion
         
         #region Historical Data Extraction
-        public void StartHistoricalDataExtraction()
+        public void StartHistoricalDataExtraction(int requestedBars = 0)
         {
             if (isExtractingData)
             {
@@ -942,8 +1002,45 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
             }
             
-            int reasonableLimit = 5000;
-            int availableBars = Math.Min(Math.Min(CurrentBar + 1, MaxHistoricalBars), reasonableLimit);
+            // Usar el valor solicitado o el valor predeterminado
+            int barsRequested = requestedBars > 0 ? requestedBars : MaxHistoricalBars;
+            
+            // Limitar el número de barras a extraer para evitar sobrecargar NinjaTrader
+            // y mantener un valor razonable que se pueda procesar
+            int barsAvailable = CurrentBar + 1;
+            int reasonableLimit = 6000; // Aumentado para permitir más barras
+            
+            // Ver cuántas barras tienen datos válidos para los indicadores
+            int validIndicatorBars = 0;
+            
+            // Verificar desde dónde los indicadores tienen datos válidos
+            for (int i = Math.Min(50, CurrentBar); i >= 0; i--)
+            {
+                if (emaShort.IsValidDataPoint(i) && emaLong.IsValidDataPoint(i) && 
+                    atr.IsValidDataPoint(i) && adx.IsValidDataPoint(i))
+                {
+                    validIndicatorBars = CurrentBar - i;
+                    break;
+                }
+            }
+            
+            Print($"Found {validIndicatorBars} valid bars for indicators");
+            
+            // Asegurarse de que no estamos tratando de extraer más barras de las que tienen indicadores válidos
+            int adjustedBarsAvailable = Math.Min(barsAvailable, validIndicatorBars);
+            
+            // Si no hay barras válidas para los indicadores, iniciar con un valor pequeño pero válido
+            if (adjustedBarsAvailable <= 0)
+            {
+                Print("Warning: No bars with valid indicators found. Starting with minimum value.");
+                adjustedBarsAvailable = Math.Min(barsAvailable, 100); // Un valor mínimo razonable
+            }
+            
+            // Tomar el mínimo entre el límite razonable, las barras configuradas y las disponibles
+            // con indicadores válidos
+            int availableBars = Math.Min(Math.Min(adjustedBarsAvailable, barsRequested), reasonableLimit);
+            
+            Print($"Extracting {availableBars} bars (requested: {barsRequested}, available: {barsAvailable}, with valid indicators: {adjustedBarsAvailable})");
             
             if (availableBars <= 0)
             {
@@ -953,6 +1050,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             
             string instrumentName = Instrument.MasterInstrument.Name;
             
+            // Establecer el estado de extracción
             isExtractingData = true;
             isExtractionComplete = false;
             totalBarsToExtract = availableBars;
@@ -962,69 +1060,113 @@ namespace NinjaTrader.NinjaScript.Indicators
             Print($"Starting extraction of {totalBarsToExtract} historical bars for {instrumentName}...");
             Print($"CurrentBar: {CurrentBar}, Using {availableBars} bars (limited to reasonable size)");
             
+            // Enviar mensaje de inicio de extracción
             string startMessage = $"EXTRACTION_START:{totalBarsToExtract}:{instrumentName}\n";
             dataServer.SendMessage(startMessage);
             Print($"Sent extraction start message: {startMessage.Trim()}");
             
+            // Procesamiento inicial en un hilo separado para no bloquear la UI
             this.Dispatcher.InvokeAsync(() => 
             {
-                Print("Initiating first batch of data extraction...");
-                SendHistoricalBatch();
-                Print($"Initial batch of historical data sent. Progress: {(double)extractedBarsCount / totalBarsToExtract * 100:F1}%");
-                
-                this.Dispatcher.InvokeAsync(() => 
+                try
                 {
-                    while (isExtractingData && !isExtractionComplete)
+                    Print("Initiating first batch of data extraction...");
+                    SendHistoricalBatch();
+                    
+                    // Si aún no hemos terminado, programar una tarea para continuar en segundo plano
+                    // con un límite máximo de tiempo para evitar bucles infinitos
+                    if (isExtractingData && !isExtractionComplete)
                     {
-                        SendHistoricalBatch();
-                        System.Threading.Thread.Sleep(100);
+                        DateTime startTime = DateTime.Now;
+                        TimeSpan maxExtractionTime = TimeSpan.FromMinutes(2); // Limitamos a 2 minutos máximo
+                        
+                        this.Dispatcher.InvokeAsync(() => 
+                        {
+                            int previousProgress = 0;
+                            int noProgressCount = 0;
+                            int maxNoProgressAttempts = 5;
+                            int retryCount = 0;
+                            int maxRetries = 3;
+                            int currentBatchSize = barsRequested;
+                            
+                            // Continuar enviando lotes hasta completar o alcanzar el límite de tiempo
+                            while (isExtractingData && !isExtractionComplete)
+                            {
+                                // Verificar si hemos excedido el tiempo máximo
+                                if (DateTime.Now - startTime > maxExtractionTime)
+                                {
+                                    Print($"Extraction time limit exceeded ({maxExtractionTime.TotalMinutes} minutes). Stopping.");
+                                    isExtractionComplete = true;
+                                    isExtractingData = false;
+                                    dataServer.SendMessage($"EXTRACTION_COMPLETE:{instrumentName}\n");
+                                    break;
+                                }
+                                
+                                // Enviar un lote de datos
+                                SendHistoricalBatch();
+                                
+                                // Verificar si estamos haciendo progreso
+                                if (extractedBarsCount == previousProgress)
+                                {
+                                    noProgressCount++;
+                                    Print($"No progress made in extraction. Attempt {noProgressCount}/{maxNoProgressAttempts}");
+                                    
+                                    if (noProgressCount >= maxNoProgressAttempts)
+                                    {
+                                        // Intentar reducir el tamaño del lote si alcanzamos el límite de intentos sin progreso
+                                        if (retryCount < maxRetries)
+                                        {
+                                            retryCount++;
+                                            // Reducir el número de barras en cada intento
+                                            currentBatchSize = currentBatchSize / 2;
+                                            if (currentBatchSize < 100) currentBatchSize = 100; // Mínimo de 100 barras
+                                            
+                                            // Ajustar el total para el nuevo tamaño
+                                            totalBarsToExtract = Math.Min(currentBatchSize, totalBarsToExtract);
+                                            
+                                            Print($"Retrying with reduced batch size: {currentBatchSize} bars. Retry {retryCount}/{maxRetries}");
+                                            
+                                            // Reiniciar contadores
+                                            noProgressCount = 0;
+                                            continue;
+                                        }
+                                        
+                                        Print("Maximum attempts with no progress reached. Stopping extraction.");
+                                        isExtractionComplete = true;
+                                        isExtractingData = false;
+                                        dataServer.SendMessage($"EXTRACTION_COMPLETE:{instrumentName}\n");
+                                        break;
+                                    }
+                                }
+                                else
+                                {
+                                    // Reiniciar contador si hicimos progreso
+                                    noProgressCount = 0;
+                                    previousProgress = extractedBarsCount;
+                                }
+                                
+                                // Pequeña pausa para no saturar el sistema
+                                System.Threading.Thread.Sleep(100);
+                            }
+                            
+                            Print($"Background extraction process finished. Extracted {extractedBarsCount} bars.");
+                        });
                     }
-                });
-            });
-        }
-        
-        private string FormatBarData(int barsAgo, bool isHistorical = false)
-        {
-            // Format a bar's data into a string
-            try
-            {
-                // Verificar que el índice barsAgo sea válido
-                if (barsAgo < 0 || barsAgo > CurrentBar)
-                {
-                    Print($"Invalid barsAgo={barsAgo}, CurrentBar={CurrentBar}");
-                    return null;
                 }
-        
-                // Create formatter string
-                string formatPrefix = isHistorical ? "HISTORICAL:" : "";
-                string barData = string.Format("{0}{1},{2},{3},{4},{5},{6},{7},{8},{9}",
-                    formatPrefix,
-                    Open[barsAgo].ToString("F2"),
-                    High[barsAgo].ToString("F2"),
-                    Low[barsAgo].ToString("F2"),
-                    Close[barsAgo].ToString("F2"),
-                    emaShort[barsAgo].ToString("F2"),
-                    emaLong[barsAgo].ToString("F2"),
-                    atr[barsAgo].ToString("F2"),
-                    adx[barsAgo].ToString("F2"),
-                    Time[barsAgo].ToString("yyyy-MM-dd HH:mm:ss"));
-                
-                // Add newline for message separation
-                return barData + "\n";
-            }
-            catch (Exception ex)
-            {
-                Print($"Error formatting bar data for barsAgo={barsAgo}: {ex.Message}");
-                return null;
-            }
+                catch (Exception ex)
+                {
+                    Print($"Error during data extraction: {ex.Message}");
+                    isExtractionComplete = true;
+                    isExtractingData = false;
+                    dataServer.SendMessage($"EXTRACTION_COMPLETE:{instrumentName}\n");
+                }
+            });
         }
         
         private void SendHistoricalBatch()
         {
-            int batchSize = 100;
-            int barsToSend = Math.Min(batchSize, totalBarsToExtract - extractedBarsCount);
-            
-            if (barsToSend <= 0)
+            // Verificar si ya completamos la extracción
+            if (extractedBarsCount >= totalBarsToExtract || !isExtractingData)
             {
                 if (!isExtractionComplete)
                 {
@@ -1035,68 +1177,139 @@ namespace NinjaTrader.NinjaScript.Indicators
                     isExtractionComplete = true;
                     isExtractingData = false;
                     Print($"Historical data extraction completed for {instrumentName}: {extractedBarsCount} bars sent");
-                    
-                    startFromDate = null;
                 }
                 return;
             }
             
+            int batchSize = 10; // Reducido aún más para evitar sobrecarga y problemas
+            int remainingBars = totalBarsToExtract - extractedBarsCount;
+            int barsToSend = Math.Min(batchSize, remainingBars);
             int sentInThisBatch = 0;
+            int errorCount = 0;
+            int maxErrorsAllowed = 10;
             
-            try
+            // Verificar que tenemos suficientes barras disponibles
+            if (CurrentBar < barsToSend)
             {
-                if (CurrentBar < barsToSend - 1)
-                {
-                    Print($"Not enough bars available. CurrentBar: {CurrentBar}, barsToSend: {barsToSend}");
-                    return;
-                }
+                Print($"Not enough bars available. CurrentBar: {CurrentBar}, barsToSend: {barsToSend}");
                 
-                Print($"Sending batch: CurrentBar={CurrentBar}, from={extractedBarsCount} to {extractedBarsCount + barsToSend - 1}");
+                // Finalizar la extracción si no hay suficientes barras
+                isExtractionComplete = true;
+                isExtractingData = false;
                 
-                for (int i = 0; i < barsToSend; i++)
+                string instrumentName = Instrument.MasterInstrument.Name;
+                string completeMessage = $"EXTRACTION_COMPLETE:{instrumentName}\n";
+                dataServer.SendMessage(completeMessage);
+                
+                Print($"Extraction terminated - insufficient data. Got {extractedBarsCount} of {totalBarsToExtract} requested bars.");
+                return;
+            }
+            
+            // Verificar el estado de los indicadores para esta ventana de tiempo
+            bool hasValidIndicators = false;
+            for (int i = 0; i < barsToSend; i++)
+            {
+                int barIndex = extractedBarsCount + i;
+                int barsAgo = CurrentBar - barIndex;
+                
+                if (barsAgo >= 0 && barsAgo <= CurrentBar)
                 {
-                    // Calculate barsAgo based on extraction count and current index
-                    int barsAgo = CurrentBar - extractedBarsCount - i;
-                    
-                    if (barsAgo >= 0 && barsAgo <= CurrentBar)
+                    if (emaShort.IsValidDataPoint(barsAgo) && emaLong.IsValidDataPoint(barsAgo) && 
+                        atr.IsValidDataPoint(barsAgo) && adx.IsValidDataPoint(barsAgo))
                     {
-                        try
+                        hasValidIndicators = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (!hasValidIndicators)
+            {
+                Print($"No valid indicator data in this batch range: {extractedBarsCount} to {extractedBarsCount + barsToSend - 1}");
+                
+                // Avanzar al siguiente lote pero sin incrementar el contador de errores
+                extractedBarsCount += barsToSend;
+                
+                // Enviar mensaje de progreso
+                double currentProgressPercent = totalBarsToExtract > 0 ? (double)extractedBarsCount / totalBarsToExtract * 100 : 0;
+                string currentProgressMessage = $"EXTRACTION_PROGRESS:{extractedBarsCount}:{totalBarsToExtract}:{currentProgressPercent:F1}\n";
+                dataServer.SendMessage(currentProgressMessage);
+                
+                Print($"Skipped batch due to invalid indicators. Moving to next batch: {extractedBarsCount}");
+                
+                return;
+            }
+            
+            Print($"Sending batch: from={extractedBarsCount} to {extractedBarsCount + barsToSend - 1}, CurrentBar={CurrentBar}");
+            
+            // Comenzar desde la barra más antigua y avanzar hacia las más recientes
+            // Invertir el orden de envío para evitar errores de índice
+            for (int i = 0; i < barsToSend && errorCount < maxErrorsAllowed; i++)
+            {
+                // Calcular el índice de barra en el rango [0, CurrentBar]
+                // barsAgo indica cuántas barras ATRÁS desde la barra actual, por lo que
+                // 0 = la barra actual, 1 = la barra anterior, etc.
+                int barIndex = extractedBarsCount + i;
+                
+                // El valor de barsAgo es CurrentBar - el índice de la barra que queremos
+                // IMPORTANTE: Si barIndex es mayor que CurrentBar, esto puede resultar en valores negativos
+                int barsAgo = CurrentBar - barIndex;
+                
+                // Validación más estricta para evitar índices fuera de rango
+                if (barsAgo >= 0 && barsAgo <= CurrentBar && barIndex >= 0 && barIndex <= totalBarsToExtract)
+                {
+                    try
+                    {
+                        // Usar el método común para formatear los datos
+                        string message = FormatBarData(barsAgo, true);
+                        if (message != null)
                         {
-                            // Use the common FormatBarData method to create the message
-                            string message = FormatBarData(barsAgo, true);
-                            if (message != null)
+                            if (i == 0 || i % 20 == 0) // Reducir la verbosidad del log
                             {
-                                if (i % 20 == 0)
-                                {
-                                    Print($"Sending bar: barsAgo={barsAgo}, time={Time[barsAgo].ToString()}");
-                                }
-                                dataServer.SendMessage(message);
-                                sentInThisBatch++;
+                                Print($"Sending bar: barsAgo={barsAgo}, barIndex={barIndex}, time={Time[barsAgo].ToString()}");
                             }
-                        }
-                        catch (Exception ex)
-                        {
-                            Print($"Error sending bar with barsAgo={barsAgo}: {ex.Message}");
+                            
+                            dataServer.SendMessage(message);
+                            sentInThisBatch++;
                         }
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        Print($"Warning: skipping bar with barsAgo={barsAgo} - out of range [0, {CurrentBar}]");
+                        // Contar errores pero continuar con la siguiente barra
+                        errorCount++;
+                        Print($"Error sending bar with barsAgo={barsAgo}: {ex.Message}");
+                        
+                        if (errorCount >= maxErrorsAllowed)
+                        {
+                            Print($"Too many errors ({errorCount}). Stopping batch processing.");
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    // Este es un error crítico, contar y registrar
+                    errorCount++;
+                    Print($"Invalid barsAgo={barsAgo} (barIndex={barIndex}, CurrentBar={CurrentBar}) - outside valid range [0, {CurrentBar}]");
+                    
+                    if (errorCount >= maxErrorsAllowed)
+                    {
+                        Print($"Too many errors ({errorCount}). Stopping batch processing.");
+                        break;
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                Print($"Error sending batch: {ex.Message}");
-            }
             
+            // Actualizar el contador de barras extraídas
             extractedBarsCount += sentInThisBatch;
             
+            // Enviar mensaje de progreso
             double progressPercent = totalBarsToExtract > 0 ? (double)extractedBarsCount / totalBarsToExtract * 100 : 0;
             string progressMessage = $"EXTRACTION_PROGRESS:{extractedBarsCount}:{totalBarsToExtract}:{progressPercent:F1}\n";
             dataServer.SendMessage(progressMessage);
             
-            if (extractedBarsCount >= totalBarsToExtract)
+            // Verificar si hemos completado la extracción o si tuvimos demasiados errores para continuar
+            if (extractedBarsCount >= totalBarsToExtract || (sentInThisBatch == 0 && errorCount > 0))
             {
                 string instrumentName = Instrument.MasterInstrument.Name;
                 string completeMessage = $"EXTRACTION_COMPLETE:{instrumentName}\n";
@@ -1104,10 +1317,121 @@ namespace NinjaTrader.NinjaScript.Indicators
                 
                 isExtractionComplete = true;
                 isExtractingData = false;
-                Print($"Historical data extraction completed for {instrumentName}: {extractedBarsCount} bars sent");
+                
+                if (sentInThisBatch == 0 && errorCount > 0)
+                {
+                    Print($"Extraction terminated early due to errors. Got {extractedBarsCount} of {totalBarsToExtract} requested bars.");
+                }
+                else
+                {
+                    Print($"Historical data extraction completed: {extractedBarsCount} bars sent");
+                }
             }
             
             Print($"Extraction progress: {progressPercent:F1}% ({extractedBarsCount}/{totalBarsToExtract}, sent {sentInThisBatch} bars in this batch)");
+        }
+        
+        private string FormatBarData(int barsAgo, bool isHistorical = false)
+        {
+            // Format a bar's data into a string
+            try
+            {
+                // Verificación exhaustiva del índice barsAgo
+                if (barsAgo < 0)
+                {
+                    Print($"Invalid barsAgo: {barsAgo} (negative value)");
+                    return null;
+                }
+                
+                if (barsAgo > CurrentBar)
+                {
+                    Print($"Invalid barsAgo: {barsAgo} (exceeds CurrentBar: {CurrentBar})");
+                    return null;
+                }
+                
+                // Comprobar y registrar el estado de los indicadores individualmente
+                bool emaShortValid = emaShort.IsValidDataPoint(barsAgo);
+                bool emaLongValid = emaLong.IsValidDataPoint(barsAgo);
+                bool atrValid = atr.IsValidDataPoint(barsAgo);
+                bool adxValid = adx.IsValidDataPoint(barsAgo);
+                
+                if (!emaShortValid) Print($"EMA Short not valid at barsAgo={barsAgo}, CurrentBar={CurrentBar}");
+                if (!emaLongValid) Print($"EMA Long not valid at barsAgo={barsAgo}, CurrentBar={CurrentBar}");
+                if (!atrValid) Print($"ATR not valid at barsAgo={barsAgo}, CurrentBar={CurrentBar}");
+                if (!adxValid) Print($"ADX not valid at barsAgo={barsAgo}, CurrentBar={CurrentBar}");
+                
+                // Si alguno no es válido pero estamos cerca del final, usar valores predeterminados
+                if (!emaShortValid || !emaLongValid || !atrValid || !adxValid)
+                {
+                    // Si estamos cerca del final (últimos 30 períodos), usar valores predeterminados
+                    if (barsAgo <= 30 || CurrentBar - barsAgo <= 30)
+                    {
+                        Print($"Using default values for indicators at barsAgo={barsAgo} (near edge of dataset)");
+                        
+                        // Obtener el nombre del instrumento
+                        string currentInstrumentName = Instrument.MasterInstrument.Name;
+                        
+                        // Create formatter string con el nombre del instrumento agregado
+                        string currentPrefix = isHistorical ? "HISTORICAL:" : "";
+                        
+                        // Usar valores actuales para los cálculos válidos, valores predeterminados para los inválidos
+                        double emaShortValue = emaShortValid ? emaShort[barsAgo] : Close[barsAgo];
+                        double emaLongValue = emaLongValid ? emaLong[barsAgo] : Close[barsAgo];
+                        double atrValue = atrValid ? atr[barsAgo] : 0.01;
+                        double adxValue = adxValid ? adx[barsAgo] : 25;
+                        
+                        string formattedBarData = string.Format("{0}{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11}",
+                            currentPrefix,
+                            currentInstrumentName,  // Agregamos el nombre del instrumento como primer campo
+                            Open[barsAgo].ToString("F2"),
+                            High[barsAgo].ToString("F2"),
+                            Low[barsAgo].ToString("F2"),
+                            Close[barsAgo].ToString("F2"),
+                            emaShortValue.ToString("F2"),
+                            emaLongValue.ToString("F2"),
+                            atrValue.ToString("F2"),
+                            adxValue.ToString("F2"),
+                            Time[barsAgo].ToString("yyyy-MM-dd HH:mm:ss"),
+                            Time[barsAgo].ToOADate()); // Agregar valor numérico de fecha para facilitar ordenamiento
+                        
+                        // Add newline for message separation
+                        return formattedBarData + "\n";
+                    }
+                    else
+                    {
+                        Print($"Invalid data point for indicators at barsAgo={barsAgo}");
+                        return null;
+                    }
+                }
+                
+                // Si todos los indicadores son válidos
+                // Obtener el nombre del instrumento
+                string validInstrumentName = Instrument.MasterInstrument.Name;
+                
+                // Create formatter string con el nombre del instrumento agregado
+                string validPrefix = isHistorical ? "HISTORICAL:" : "";
+                string validBarData = string.Format("{0}{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11}",
+                    validPrefix,
+                    validInstrumentName,  // Agregamos el nombre del instrumento como primer campo
+                    Open[barsAgo].ToString("F2"),
+                    High[barsAgo].ToString("F2"),
+                    Low[barsAgo].ToString("F2"),
+                    Close[barsAgo].ToString("F2"),
+                    emaShort[barsAgo].ToString("F2"),
+                    emaLong[barsAgo].ToString("F2"),
+                    atr[barsAgo].ToString("F2"),
+                    adx[barsAgo].ToString("F2"),
+                    Time[barsAgo].ToString("yyyy-MM-dd HH:mm:ss"),
+                    Time[barsAgo].ToOADate()); // Agregar valor numérico de fecha para facilitar ordenamiento
+                
+                // Add newline for message separation
+                return validBarData + "\n";
+            }
+            catch (Exception ex)
+            {
+                Print($"Error formatting bar data for barsAgo={barsAgo}: {ex.Message}");
+                return null;
+            }
         }
         
         private void SendBarData(int barIndex)

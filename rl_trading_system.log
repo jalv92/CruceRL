@@ -508,3 +508,4 @@
 2025-03-01 19:13:06,765 - INFO - Deteniendo proceso...
 2025-03-01 19:13:06,765 - INFO - Proceso detenido correctamente
 2025-03-01 19:13:08,336 - INFO - Eval num_timesteps=150000, episode_reward=47.43
+2025-03-01 19:47:11,540 - INFO - Módulos de trading inicializados correctamente

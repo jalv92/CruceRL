@@ -83,12 +83,10 @@ class TradingTrainingCallback(BaseCallback):
             if self.enable_auto_tuning:
                 self._check_and_tune_hyperparameters(mean_reward)
             
-            # Save best model
-            if self.save_path is not None and mean_reward > self.best_reward:
+            # Track best reward (but don't save intermediate models)
+            if mean_reward > self.best_reward:
                 self.best_reward = mean_reward
-                model_path = os.path.join(self.save_path, f"best_model_step_{self.n_calls}")
-                self.model.save(model_path)
-                logger.info(f"New best model saved with reward: {mean_reward:.2f}")
+                logger.info(f"New best reward: {mean_reward:.2f}")
             
             # Call the training callback if provided
             if self.training_callback is not None:
@@ -464,7 +462,9 @@ class TrainingManager:
         
         return model
     
-    def train(self, train_data, test_data=None, training_callback=None, enable_auto_tuning=True, **kwargs):
+    def train(self, train_data, test_data=None, training_callback=None, enable_auto_tuning=True, 
+              instrument_name="Unknown", continue_training=False, existing_model_path=None, 
+              existing_vec_normalize_path=None, **kwargs):
         """
         Train the RL model with adaptive hyperparameter tuning
         
@@ -473,6 +473,10 @@ class TrainingManager:
             test_data: Optional DataFrame with testing data for evaluation
             training_callback: Optional callback function to report training progress
             enable_auto_tuning: Whether to automatically tune hyperparameters during training
+            instrument_name: Name of the financial instrument being trained on
+            continue_training: Whether to continue training from an existing model
+            existing_model_path: Path to existing model for continued training
+            existing_vec_normalize_path: Path to existing VecNormalize stats for continued training
             **kwargs: Optional parameters to override defaults
             
         Returns:
@@ -482,15 +486,38 @@ class TrainingManager:
         self.train_params.update({k: v for k, v in kwargs.items() if k in self.train_params})
         self.env_params.update({k: v for k, v in kwargs.items() if k in self.env_params})
         
-        logger.info(f"Starting training with algorithm: {self.train_params['algo']}")
+        logger.info(f"Starting training for instrument: {instrument_name}")
+        logger.info(f"Algorithm: {self.train_params['algo']}")
         logger.info(f"Training parameters: {self.train_params}")
         logger.info(f"Environment parameters: {self.env_params}")
+        logger.info(f"Continue training: {continue_training}")
         
         # Create training environment
         train_env = self.create_env(train_data, is_train=True)
         
-        # Create model
-        model = self.create_model(train_env)
+        # Create or load model
+        if continue_training and existing_model_path and os.path.exists(existing_model_path):
+            try:
+                # Load the existing model
+                logger.info(f"Loading existing model from {existing_model_path}")
+                model = self.load_model(existing_model_path)
+                
+                # Load normalization stats if available
+                if existing_vec_normalize_path and os.path.exists(existing_vec_normalize_path):
+                    logger.info(f"Loading existing normalization stats from {existing_vec_normalize_path}")
+                    train_env = VecNormalize.load(existing_vec_normalize_path, train_env)
+                    train_env.training = True  # Make sure we're in training mode
+                
+                # Update the model's environment
+                model.set_env(train_env)
+                logger.info("Successfully loaded existing model and environment")
+            except Exception as e:
+                logger.error(f"Error loading existing model: {e}")
+                logger.info("Creating new model instead")
+                model = self.create_model(train_env)
+        else:
+            # Create a new model
+            model = self.create_model(train_env)
         
         # Create test environment if test data provided
         eval_callback = None
@@ -498,15 +525,12 @@ class TrainingManager:
             # Create evaluation environment with the same normalization but without updating stats
             test_env = self.create_env(test_data, is_train=False)
             
-            # Instead of using EvalCallback directly, use a custom function
-            # to avoid synchronization issues
+            # Custom evaluation callback (without saving intermediate models)
             class CustomEvalCallback(BaseCallback):
-                def __init__(self, eval_env, eval_freq=10000, best_model_save_path=None, 
-                            log_path=None, deterministic=True, verbose=1):
+                def __init__(self, eval_env, eval_freq=10000, log_path=None, deterministic=True, verbose=1):
                     super().__init__(verbose)
                     self.eval_env = eval_env
                     self.eval_freq = eval_freq
-                    self.best_model_save_path = best_model_save_path
                     self.log_path = log_path
                     self.deterministic = deterministic
                     self.best_mean_reward = -np.inf
@@ -524,35 +548,24 @@ class TrainingManager:
                         if self.verbose > 0:
                             logger.info(f"Eval num_timesteps={self.num_timesteps}, " 
                                     f"episode_reward={mean_reward:.2f}")
-                        
-                        # Save best model
-                        if mean_reward > self.best_mean_reward:
-                            self.best_mean_reward = mean_reward
-                            if self.best_model_save_path is not None:
-                                self.model.save(os.path.join(
-                                    self.best_model_save_path, 
-                                    f"best_model_step_{self.num_timesteps}"
-                                ))
-                                logger.info(f"New best model saved with reward: {mean_reward:.2f}")
                     
                     return True
             
-            # Create our custom callback
+            # Create our custom callback (without saving intermediate models)
             eval_callback = CustomEvalCallback(
                 test_env,
-                best_model_save_path=self.models_dir,
                 log_path=self.logs_dir,
                 eval_freq=10000,
                 deterministic=True
             )
         
-        # Training callback for logging and hyperparameter tuning
+        # Training callback for logging and hyperparameter tuning (no model saving during training)
         training_callback_obj = TradingTrainingCallback(
             check_freq=5000,
-            save_path=self.models_dir,
+            save_path=None,  # Don't save intermediate models
             verbose=1,
-            training_callback=training_callback,  # Pass the callback function
-            enable_auto_tuning=enable_auto_tuning  # Enable/disable auto-tuning
+            training_callback=training_callback,
+            enable_auto_tuning=enable_auto_tuning
         )
         
         # Create callback list
@@ -570,17 +583,20 @@ class TrainingManager:
         
         logger.info(f"Training completed in {training_time:.2f} seconds")
         
-        # Save the final model
-        final_model_path = os.path.join(self.models_dir, "final_model")
-        model.save(final_model_path)
+        # Save the final model with timestamp and instrument name
+        timestamp = datetime.now().strftime("%m-%d-%y_%H%M%S")
+        model_filename = f"{instrument_name}_{timestamp}"
+        model_path = os.path.join(self.models_dir, model_filename)
+        model.save(model_path)
         
-        # Also save the VecNormalize stats
-        vec_norm_path = os.path.join(self.models_dir, "vec_normalize_final.pkl")
+        # Also save the VecNormalize stats with matching name
+        vec_norm_path = os.path.join(self.models_dir, f"{model_filename}_vecnorm.pkl")
         train_env.save(vec_norm_path)
         
-        logger.info(f"Final model saved to {final_model_path}")
+        logger.info(f"Model saved as {model_path}")
+        logger.info(f"Normalization stats saved as {vec_norm_path}")
         
-        return model, train_env
+        return model, train_env, model_path, vec_norm_path
     
     def load_model(self, model_path, vec_norm_path=None):
         """

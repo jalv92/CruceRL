@@ -642,6 +642,90 @@ class TrainingConfigDialog(tk.Toplevel):
         )
         title_label.pack(pady=(0, 10))
         
+        # Panel de selección de instrumento y datos disponibles
+        data_selection_frame = tk.Frame(main_frame, bg=COLORS['bg_dark'])
+        data_selection_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Label e instrucciones
+        tk.Label(
+            data_selection_frame,
+            text="Available Data & Instrument Selection",
+            fg=COLORS['accent'],
+            bg=COLORS['bg_dark'],
+            font=('Segoe UI', 12, 'bold')
+        ).pack(anchor='w', pady=(0, 5))
+        
+        # Contenedor para instrument y continue training
+        instr_frame = tk.Frame(data_selection_frame, bg=COLORS['bg_dark'])
+        instr_frame.pack(fill=tk.X, pady=5)
+        
+        # Instrument selection
+        tk.Label(
+            instr_frame,
+            text="Financial Instrument:",
+            fg=COLORS['fg_light'],
+            bg=COLORS['bg_dark'],
+            font=('Segoe UI', 10)
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Variable para almacenar el instrumento seleccionado
+        self.instrument_var = tk.StringVar(value="")
+        
+        # Combobox para seleccionar instrumento
+        # Buscar archivos de datos disponibles
+        self.available_instruments = self.find_available_instruments()
+        
+        self.instrument_combobox = ttk.Combobox(
+            instr_frame,
+            textvariable=self.instrument_var, 
+            values=self.available_instruments,
+            width=25,
+            state="readonly"
+        )
+        self.instrument_combobox.pack(side=tk.LEFT, padx=(0, 20))
+        
+        # Continue training checkbox
+        self.continue_training_var = tk.BooleanVar(value=False)
+        continue_training_check = tk.Checkbutton(
+            instr_frame,
+            text="Continue Training From Existing Model",
+            variable=self.continue_training_var,
+            bg=COLORS['bg_dark'],
+            fg=COLORS['fg_light'],
+            selectcolor=COLORS['bg_medium'],
+            activebackground=COLORS['bg_dark'],
+            activeforeground=COLORS['accent'],
+            command=self.toggle_continue_training
+        )
+        continue_training_check.pack(side=tk.LEFT)
+        
+        # Modelo selection (hidden by default)
+        self.model_selection_frame = tk.Frame(data_selection_frame, bg=COLORS['bg_dark'])
+        
+        tk.Label(
+            self.model_selection_frame,
+            text="Select Model:",
+            fg=COLORS['fg_light'],
+            bg=COLORS['bg_dark'],
+            font=('Segoe UI', 10)
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Variable para almacenar el modelo seleccionado
+        self.model_var = tk.StringVar(value="")
+        
+        # Combobox para seleccionar modelo
+        self.model_combobox = ttk.Combobox(
+            self.model_selection_frame,
+            textvariable=self.model_var, 
+            values=[],
+            width=45,
+            state="readonly"
+        )
+        self.model_combobox.pack(side=tk.LEFT)
+        
+        # Bind para actualizar los modelos disponibles cuando cambia el instrumento
+        self.instrument_combobox.bind("<<ComboboxSelected>>", self.update_available_models)
+        
         # Crear notebook para pestañas
         self.notebook = ttk.Notebook(main_frame)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -719,6 +803,78 @@ class TrainingConfigDialog(tk.Toplevel):
         x = (self.winfo_screenwidth() // 2) - (width // 2)
         y = (self.winfo_screenheight() // 2) - (height // 2)
         self.geometry(f"{width}x{height}+{x}+{y}")
+    
+    def find_available_instruments(self):
+        """Find available instruments from data files"""
+        instruments = set()
+        data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        
+        try:
+            if os.path.exists(data_dir):
+                files = os.listdir(data_dir)
+                for file in files:
+                    if file.endswith('.csv'):
+                        # Try to extract instrument name (assuming format instrument_timestamp.csv)
+                        parts = file.split('_')
+                        if len(parts) >= 2:
+                            instruments.add(parts[0])
+                        else:
+                            # Just add the filename without extension as a fallback
+                            instruments.add(os.path.splitext(file)[0])
+        except Exception as e:
+            logger.error(f"Error finding available instruments: {e}")
+        
+        # Convert set to sorted list
+        instruments_list = sorted(list(instruments))
+        return instruments_list
+    
+    def find_available_models(self, instrument):
+        """Find available models for the selected instrument"""
+        models = []
+        models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+        
+        try:
+            if os.path.exists(models_dir) and instrument:
+                files = os.listdir(models_dir)
+                for file in files:
+                    # Skip VecNormalize files and only get .zip files
+                    if file.startswith(instrument) and file.endswith('.zip') and '_vecnorm' not in file:
+                        models.append(file)
+        except Exception as e:
+            logger.error(f"Error finding available models: {e}")
+        
+        # Sort by timestamp (newest first)
+        models.sort(reverse=True)
+        return models
+    
+    def update_available_models(self, event=None):
+        """Update the available models dropdown based on selected instrument"""
+        selected_instrument = self.instrument_var.get()
+        
+        if selected_instrument:
+            models = self.find_available_models(selected_instrument)
+            self.model_combobox.config(values=models)
+            
+            # Clear the model selection
+            self.model_var.set("")
+            
+            # Update UI based on continue training state
+            self.toggle_continue_training()
+    
+    def toggle_continue_training(self):
+        """Show/hide model selection based on continue training checkbox"""
+        if self.continue_training_var.get():
+            # Show model selection
+            self.model_selection_frame.pack(fill=tk.X, pady=5)
+            
+            # Update available models
+            selected_instrument = self.instrument_var.get()
+            if selected_instrument:
+                models = self.find_available_models(selected_instrument)
+                self.model_combobox.config(values=models)
+        else:
+            # Hide model selection
+            self.model_selection_frame.pack_forget()
     
     def init_config_vars(self):
         """Inicializa las variables de configuración del diálogo"""
@@ -1164,7 +1320,29 @@ class TrainingConfigDialog(tk.Toplevel):
         self.time_decay_factor_var.set(self.config_panel.time_decay_factor_var.get())
     
     def on_ok(self):
+        # Check if instrument is selected
+        if not self.instrument_var.get():
+            messagebox.showerror("Error", "Please select a financial instrument")
+            return
+            
+        # If continue training is enabled, verify a model is selected
+        if self.continue_training_var.get() and not self.model_var.get():
+            messagebox.showerror("Error", "Please select a model for continued training")
+            return
+        
         # Sincronizar valores del diálogo con el panel de configuración
+        # Add the new instrument and model parameters to config panel
+        if not hasattr(self.config_panel, 'instrument_var'):
+            # Create new attributes if they don't exist
+            self.config_panel.instrument_var = tk.StringVar()
+            self.config_panel.continue_training_var = tk.BooleanVar()
+            self.config_panel.model_var = tk.StringVar()
+            
+        # Set the new values
+        self.config_panel.instrument_var.set(self.instrument_var.get())
+        self.config_panel.continue_training_var.set(self.continue_training_var.get())
+        self.config_panel.model_var.set(self.model_var.get())
+        
         # Algoritmo
         self.config_panel.algo_var.set(self.algo_var.get())
         self.config_panel.timesteps_var.set(self.timesteps_var.get())

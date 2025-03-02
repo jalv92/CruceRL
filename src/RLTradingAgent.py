@@ -167,6 +167,7 @@ class RLAgent:
         self.current_position = 0  # Track current position: -1 (short), 0 (none), 1 (long)
         self.position_size = 0  # Track position size
         self.trades_count = 0  # Track number of trades
+        self.trade_count = 0  # This was missing - alias for trades_count for compatibility 
         self.winning_trades = 0  # Track winning trades
         self.successful_trades = 0  # Track successful trades
         self.entry_price = 0.0  # Track entry price for P&L calculation
@@ -210,6 +211,7 @@ class RLAgent:
                 elif 'Exit' in action or 'SL/TP' in action:
                     # Track completed trade
                     self.trades_count += 1
+                    self.trade_count = self.trades_count  # Keep both variables in sync
                     if trade_data.get('pnl', 0.0) > 0:
                         self.successful_trades += 1
                     
@@ -503,7 +505,7 @@ class NinjaTraderInterface:
             if message.startswith("EXTRACTION_"):
                 # Handle extraction-related messages
                 if message.startswith("EXTRACTION_START"):
-                    # Extract the total bars count
+                    # Extract the total bars count and instrument name
                     parts = message.split(":")
                     if len(parts) > 1:
                         self.total_bars_to_extract = int(parts[1])
@@ -511,11 +513,69 @@ class NinjaTraderInterface:
                         self.is_extracting_data = True
                         self.extraction_complete = False
                         
-                        logger.info(f"Starting extraction of {self.total_bars_to_extract} bars")
+                        # Extract instrument name if available
+                        instrument_name = "Unknown"
+                        if len(parts) > 2:
+                            instrument_name = parts[2].strip()
+                        
+                        # Reset historical data buffer for this new extraction
+                        self.historical_data = MarketData(max_history=100000)
+                        
+                        logger.info(f"Starting extraction of {self.total_bars_to_extract} bars for {instrument_name}")
                         
                         # Notify callback if available
                         if self.extraction_callback:
-                            self.extraction_callback(0, self.total_bars_to_extract, 0)
+                            self.extraction_callback(0, self.total_bars_to_extract, 0, None, instrument_name)
+                    
+                elif message.startswith("CHECK_EXISTING_DATA"):
+                    # Check if we have existing data for an instrument
+                    parts = message.split(":")
+                    if len(parts) > 1:
+                        instrument_name = parts[1].strip()
+                        
+                        # Check for existing data files
+                        data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+                        existing_files = []
+                        latest_timestamp = None
+                        
+                        if os.path.exists(data_dir):
+                            for file in os.listdir(data_dir):
+                                if file.startswith(f"{instrument_name}_") and file.endswith(".csv"):
+                                    file_path = os.path.join(data_dir, file)
+                                    existing_files.append(file_path)
+                        
+                        if existing_files:
+                            # We have existing data, load the most recent file to check last timestamp
+                            existing_files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+                            latest_file = existing_files[0]
+                            
+                            try:
+                                df = pd.read_csv(latest_file)
+                                if 'timestamp' in df.columns and len(df) > 0:
+                                    # Convert to datetime if it's not already
+                                    df['timestamp'] = pd.to_datetime(df['timestamp'])
+                                    latest_timestamp = df['timestamp'].max()
+                                    
+                                    logger.info(f"Found existing data for {instrument_name} up to {latest_timestamp}")
+                                    
+                                    # Tell NinjaTrader to start extraction from this date
+                                    response = f"EXISTING_DATA_FOUND:{instrument_name}:{latest_timestamp}\n"
+                                else:
+                                    logger.info(f"Existing data file found but no valid timestamp column")
+                                    response = f"NO_EXISTING_DATA:{instrument_name}\n"
+                            except Exception as e:
+                                logger.error(f"Error reading existing data file: {e}")
+                                response = f"NO_EXISTING_DATA:{instrument_name}\n"
+                        else:
+                            logger.info(f"No existing data found for {instrument_name}")
+                            response = f"NO_EXISTING_DATA:{instrument_name}\n"
+                        
+                        # Send response back to NinjaTrader
+                        if self.order_sender_socket and self.order_sender_socket.fileno() != -1:
+                            try:
+                                self.send_order_command(response)
+                            except Exception as e:
+                                logger.error(f"Error sending data existence response: {e}")
                     
                 elif message.startswith("EXTRACTION_PROGRESS"):
                     # Update extraction progress
@@ -538,22 +598,88 @@ class NinjaTraderInterface:
                     self.is_extracting_data = False
                     self.extraction_complete = True
                     
-                    # Generate a timestamp for the filename
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"data/extracted_data_{timestamp}.csv"
+                    # Extract instrument name from message if available
+                    instrument_name = "Unknown"
+                    parts = message.split(":")
+                    if len(parts) > 1:
+                        instrument_name = parts[1].strip()
                     
-                    # Save the data to a file
-                    if self.historical_data.save_to_file(filename):
-                        # Notify callback with the filename
-                        if self.extraction_callback:
-                            self.extraction_callback(
-                                self.total_bars_to_extract,
-                                self.total_bars_to_extract,
-                                100.0,
-                                filename
-                            )
+                    # Check if we already have data for this instrument
+                    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+                    existing_files = []
+                    if os.path.exists(data_dir):
+                        for file in os.listdir(data_dir):
+                            if file.startswith(f"{instrument_name}_") and file.endswith(".csv"):
+                                existing_files.append(os.path.join(data_dir, file))
+                    
+                    # Generate a filename based on whether we're appending or creating new
+                    timestamp = datetime.now().strftime("%m-%d-%y_%H%M%S")
+                    
+                    if existing_files:
+                        # Sort by modification time to get the most recent file
+                        existing_files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+                        latest_file = existing_files[0]
+                        
+                        # Try to load existing data
+                        try:
+                            existing_data = pd.read_csv(latest_file)
+                            logger.info(f"Found existing data file {latest_file} with {len(existing_data)} bars")
+                            
+                            # Merge existing data with new data
+                            merged_data = pd.concat([existing_data, self.historical_data.data], ignore_index=True)
+                            
+                            # Remove duplicates if any (based on timestamp)
+                            if 'timestamp' in merged_data.columns:
+                                merged_data.drop_duplicates(subset=['timestamp'], keep='last', inplace=True)
+                                
+                            # Sort by timestamp if available
+                            if 'timestamp' in merged_data.columns:
+                                merged_data['timestamp'] = pd.to_datetime(merged_data['timestamp'])
+                                merged_data.sort_values('timestamp', inplace=True)
+                            
+                            # Save back to the same file
+                            merged_data.to_csv(latest_file, index=False)
+                            filename = latest_file
+                            logger.info(f"Updated existing data file with {len(merged_data)} total bars")
+                            
+                            # Notify callback with the filename
+                            if self.extraction_callback:
+                                self.extraction_callback(
+                                    self.total_bars_to_extract,
+                                    self.total_bars_to_extract,
+                                    100.0,
+                                    filename,
+                                    instrument_name
+                                )
+                            
+                        except Exception as e:
+                            logger.error(f"Error merging with existing data: {e}, creating new file instead")
+                            # Fall back to creating a new file
+                            filename = f"data/{instrument_name}_{timestamp}.csv"
+                            if self.historical_data.save_to_file(filename):
+                                if self.extraction_callback:
+                                    self.extraction_callback(
+                                        self.total_bars_to_extract,
+                                        self.total_bars_to_extract,
+                                        100.0,
+                                        filename,
+                                        instrument_name
+                                    )
                     else:
-                        logger.error("Failed to save extracted data")
+                        # No existing file, create a new one
+                        filename = f"data/{instrument_name}_{timestamp}.csv"
+                        if self.historical_data.save_to_file(filename):
+                            # Notify callback with the filename
+                            if self.extraction_callback:
+                                self.extraction_callback(
+                                    self.total_bars_to_extract,
+                                    self.total_bars_to_extract,
+                                    100.0,
+                                    filename,
+                                    instrument_name
+                                )
+                        else:
+                            logger.error("Failed to save extracted data")
                         
                 return
                 

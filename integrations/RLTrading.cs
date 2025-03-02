@@ -445,21 +445,28 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
             
+            // Get current instrument name
+            string instrumentName = Instrument.MasterInstrument.Name;
+            
             // Initialize extraction variables
             isExtractingData = true;
             isExtractionComplete = false;
             totalBarsToExtract = availableBars;
             extractedBarsCount = 0;
             
-            Print($"Starting extraction of {totalBarsToExtract} historical bars...");
+            Print($"Starting extraction of {totalBarsToExtract} historical bars for {instrumentName}...");
             
-            // Send extraction start message
-            string startMessage = $"EXTRACTION_START:{totalBarsToExtract}\n";
-            SendDataMessage(startMessage);
+            // Send a message to check existing data first
+            string checkMessage = $"CHECK_EXISTING_DATA:{instrumentName}\n";
+            SendDataMessage(checkMessage);
             
-            // Start sending historical data
-            SendHistoricalBatch();
+            // Wait for response from Python about existing data
+            // The actual data sending will be triggered when Python responds
+            Print($"Checking for existing data for {instrumentName}...");
         }
+        
+        // Variable para almacenar la fecha desde la que filtrar los datos
+        private DateTime? startFromDate = null;
         
         private void SendHistoricalBatch()
         {
@@ -472,26 +479,50 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Extraction complete
                 if (!isExtractionComplete)
                 {
-                    string completeMessage = "EXTRACTION_COMPLETE\n";
+                    // Include instrument name in the completion message
+                    string instrumentName = Instrument.MasterInstrument.Name;
+                    string completeMessage = $"EXTRACTION_COMPLETE:{instrumentName}\n";
                     SendDataMessage(completeMessage);
                     
                     isExtractionComplete = true;
                     isExtractingData = false;
-                    Print($"Historical data extraction completed: {extractedBarsCount} bars sent");
+                    Print($"Historical data extraction completed for {instrumentName}: {extractedBarsCount} bars sent");
+                    
+                    // Reset start date after completion
+                    startFromDate = null;
                 }
                 return;
             }
             
             // Send a batch of historical bars
+            int sentInThisBatch = 0;
+            
             for (int i = 0; i < barsToSend; i++)
             {
-                int barIndex = totalBarsToExtract - extractedBarsCount - i - 1;
+                int barIndex = totalBarsToExtract - extractedBarsCount - sentInThisBatch - 1;
                 if (barIndex >= 0 && barIndex <= CurrentBar)
                 {
-                    SendBarDataForExtraction(barIndex);
-                    extractedBarsCount++;
+                    // Check if we need to filter by date
+                    if (startFromDate.HasValue)
+                    {
+                        // If bar time is AFTER our start date, send the data
+                        if (Time[barIndex] > startFromDate.Value)
+                        {
+                            SendBarDataForExtraction(barIndex);
+                            sentInThisBatch++;
+                        }
+                    }
+                    else
+                    {
+                        // No date filtering, send all data
+                        SendBarDataForExtraction(barIndex);
+                        sentInThisBatch++;
+                    }
                 }
             }
+            
+            // Update the count of extracted bars
+            extractedBarsCount += sentInThisBatch;
             
             // Send progress update
             double progressPercent = (double)extractedBarsCount / totalBarsToExtract * 100;
@@ -821,9 +852,64 @@ namespace NinjaTrader.NinjaScript.Strategies
                     return;
                 }
                 
-                string[] parts = message.Split(',');
+                // Handle responses from Python server about existing data
+                if (message.StartsWith("EXISTING_DATA_FOUND:"))
+                {
+                    string[] dataParts = message.Split(':');
+                    if (dataParts.Length > 2)
+                    {
+                        string instrumentName = dataParts[1];
+                        string dateTimeStr = dataParts[2];
+                        
+                        Print($"Found existing data for {instrumentName} up to {dateTimeStr}");
+                        
+                        // Parse the date string to DateTime
+                        DateTime startDate;
+                        if (DateTime.TryParse(dateTimeStr, out startDate))
+                        {
+                            // Set the start date for filtering
+                            startFromDate = startDate;
+                            Print($"Will extract data after {startDate}");
+                        }
+                        else
+                        {
+                            Print($"Could not parse date: {dateTimeStr}, will extract all data");
+                            startFromDate = null;
+                        }
+                        
+                        // Send start message with total bars and the date to start from
+                        string startMessage = $"EXTRACTION_START:{totalBarsToExtract}:{instrumentName}:{dateTimeStr}\n";
+                        SendDataMessage(startMessage);
+                        
+                        // Start sending historical data (filtered by date)
+                        this.Dispatcher.InvokeAsync(() => SendHistoricalBatch());
+                    }
+                    return;
+                }
+                else if (message.StartsWith("NO_EXISTING_DATA:"))
+                {
+                    string[] dataParts = message.Split(':');
+                    if (dataParts.Length > 1)
+                    {
+                        string instrumentName = dataParts[1];
+                        Print($"No existing data found for {instrumentName}. Starting fresh extraction...");
+                        
+                        // Reset start date for a fresh extraction
+                        startFromDate = null;
+                        
+                        // Start fresh extraction
+                        string startMessage = $"EXTRACTION_START:{totalBarsToExtract}:{instrumentName}\n";
+                        SendDataMessage(startMessage);
+                        
+                        // Start sending historical data
+                        this.Dispatcher.InvokeAsync(() => SendHistoricalBatch());
+                    }
+                    return;
+                }
                 
-                if (parts.Length < 5)
+                string[] commandParts = message.Split(',');
+                
+                if (commandParts.Length < 5)
                 {
                     Print("Invalid order message format. Expected at least 5 parameters.");
                     // Enviar respuesta de error al cliente
@@ -838,11 +924,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 double stopLoss;
                 double takeProfit;
                 
-                if (!int.TryParse(parts[0], out tradeSignal) ||
-                    !int.TryParse(parts[1], out emaChoice) ||
-                    !double.TryParse(parts[2], out positionSize) ||
-                    !double.TryParse(parts[3], out stopLoss) ||
-                    !double.TryParse(parts[4], out takeProfit))
+                if (!int.TryParse(commandParts[0], out tradeSignal) ||
+                    !int.TryParse(commandParts[1], out emaChoice) ||
+                    !double.TryParse(commandParts[2], out positionSize) ||
+                    !double.TryParse(commandParts[3], out stopLoss) ||
+                    !double.TryParse(commandParts[4], out takeProfit))
                 {
                     Print("Invalid order message data. Could not parse values.");
                     SendDataMessage("ERROR:Invalid_Values\n");

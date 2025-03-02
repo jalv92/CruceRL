@@ -28,30 +28,445 @@ namespace NinjaTrader.NinjaScript.Indicators
     /// </summary>
     public class RLCommunicationIndicator : Indicator
     {
+        #region TCP Server Manager
+        /// <summary>
+        /// Helper class to manage TCP server functionality and eliminate code duplication
+        /// </summary>
+        private class TcpServerManager
+        {
+            // Properties
+            public string Name { get; private set; }
+            public string ServerIP { get; private set; }
+            public int Port { get; private set; }
+            public bool IsRunning { get; private set; }
+            public DateTime LastHeartbeatTime { get; set; }
+            public bool IsConnected => Client != null && Client.Connected;
+            
+            // Connection objects
+            public TcpListener Server { get; private set; }
+            public TcpClient Client { get; private set; }
+            public NetworkStream ClientStream { get; private set; }
+            
+            // Thread management
+            private Thread serverThread;
+            private Queue<string> messageBuffer;
+            private int bufferSize;
+            
+            // Delegates and events
+            public delegate void MessageReceivedHandler(string message);
+            public event MessageReceivedHandler OnMessageReceived;
+            
+            // Connection timeout
+            private int connectionTimeout;
+            
+            // Logger function (using Print from NinjaTrader)
+            private Action<string> logFunc;
+            
+            /// <summary>
+            /// Constructor for TcpServerManager
+            /// </summary>
+            public TcpServerManager(string name, string serverIP, int port, int bufferSize = 60, int connectionTimeout = 5, Action<string> logger = null)
+            {
+                Name = name;
+                ServerIP = serverIP;
+                Port = port;
+                this.bufferSize = bufferSize;
+                this.connectionTimeout = connectionTimeout;
+                messageBuffer = new Queue<string>();
+                LastHeartbeatTime = DateTime.MinValue;
+                logFunc = logger ?? (message => { /* Default empty logger */ });
+            }
+            
+            /// <summary>
+            /// Start the TCP server
+            /// </summary>
+            public bool Start()
+            {
+                if (IsRunning)
+                    return true;
+                    
+                try
+                {
+                    // Clean up existing resources
+                    Stop();
+                    
+                    // Log server start attempt
+                    logFunc($"Starting {Name} server on {ServerIP}:{Port}...");
+                    
+                    // Create and start TCP listener
+                    IPAddress ipAddress = IPAddress.Parse(ServerIP);
+                    Server = new TcpListener(ipAddress, Port);
+                    Server.Start();
+                    
+                    // Log successful start
+                    logFunc($"{Name} server started on {ServerIP}:{Port}");
+                    
+                    // Start server thread
+                    IsRunning = true;
+                    serverThread = new Thread(ServerLoop);
+                    serverThread.IsBackground = true;
+                    serverThread.Start();
+                    
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    // Log error and clean up
+                    logFunc($"Error starting {Name} server: {ex.Message}");
+                    
+                    if (Server != null)
+                    {
+                        try { Server.Stop(); } catch { }
+                        Server = null;
+                    }
+                    
+                    IsRunning = false;
+                    return false;
+                }
+            }
+            
+            /// <summary>
+            /// Stop the TCP server and clean up resources
+            /// </summary>
+            public void Stop()
+            {
+                try
+                {
+                    // Mark server as stopping
+                    IsRunning = false;
+                    
+                    // Close client stream
+                    if (ClientStream != null)
+                    {
+                        try
+                        {
+                            ClientStream.Flush();
+                            ClientStream.Close();
+                        }
+                        catch (Exception ex)
+                        {
+                            logFunc($"Error closing {Name} client stream: {ex.Message}");
+                        }
+                        finally
+                        {
+                            ClientStream = null;
+                        }
+                    }
+                    
+                    // Close client connection
+                    if (Client != null)
+                    {
+                        try
+                        {
+                            Client.Close();
+                        }
+                        catch (Exception ex)
+                        {
+                            logFunc($"Error closing {Name} client: {ex.Message}");
+                        }
+                        finally
+                        {
+                            Client = null;
+                        }
+                    }
+                    
+                    // Stop the server
+                    if (Server != null)
+                    {
+                        try
+                        {
+                            Server.Stop();
+                        }
+                        catch (Exception ex)
+                        {
+                            logFunc($"Error stopping {Name} server: {ex.Message}");
+                        }
+                        finally
+                        {
+                            Server = null;
+                        }
+                    }
+                    
+                    // Wait for thread to terminate
+                    if (serverThread != null && serverThread.IsAlive)
+                    {
+                        try
+                        {
+                            serverThread.Join(2000);
+                            if (serverThread.IsAlive)
+                            {
+                                // Last resort
+                                serverThread.Abort();
+                            }
+                        }
+                        catch { }
+                        serverThread = null;
+                    }
+                    
+                    logFunc($"{Name} server stopped successfully");
+                }
+                catch (Exception ex)
+                {
+                    logFunc($"Error stopping {Name} server: {ex.Message}");
+                }
+                finally
+                {
+                    // Force resource cleanup
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                }
+            }
+            
+            /// <summary>
+            /// Send a message to the connected client or buffer it
+            /// </summary>
+            public bool SendMessage(string message)
+            {
+                try
+                {
+                    // Check if connected to a client
+                    if (Client != null && Client.Connected && ClientStream != null)
+                    {
+                        // Send data directly
+                        byte[] data = Encoding.ASCII.GetBytes(message);
+                        ClientStream.Write(data, 0, data.Length);
+                        
+                        // Log non-heartbeat messages for debugging
+                        if (!message.StartsWith("PING") && !message.StartsWith("PONG") && !message.StartsWith("HEARTBEAT"))
+                        {
+                            logFunc($"[{Name} Server] Sent: {message.Trim()}");
+                        }
+                        
+                        return true;
+                    }
+                    else
+                    {
+                        // Buffer the message if it's not a heartbeat
+                        if (!message.StartsWith("PING") && !message.StartsWith("PONG") && !message.StartsWith("HEARTBEAT"))
+                        {
+                            messageBuffer.Enqueue(message);
+                            
+                            // Limit buffer size
+                            while (messageBuffer.Count > bufferSize)
+                                messageBuffer.Dequeue();
+                                
+                            logFunc($"[{Name} Server] Buffered message (no connection): {message.Trim()}");
+                        }
+                        
+                        return false;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logFunc($"Error sending {Name} message: {ex.Message}");
+                    
+                    // Buffer non-heartbeat messages for retry
+                    if (!message.StartsWith("PING") && !message.StartsWith("PONG") && !message.StartsWith("HEARTBEAT"))
+                    {
+                        messageBuffer.Enqueue(message);
+                        
+                        // Limit buffer size
+                        while (messageBuffer.Count > bufferSize)
+                            messageBuffer.Dequeue();
+                    }
+                    
+                    // Client connection might be broken, clean up
+                    if (ClientStream != null)
+                    {
+                        try { ClientStream.Close(); } catch { }
+                        ClientStream = null;
+                    }
+                    
+                    if (Client != null)
+                    {
+                        try { Client.Close(); } catch { }
+                        Client = null;
+                    }
+                    
+                    return false;
+                }
+            }
+            
+            /// <summary>
+            /// Main server loop to accept and handle client connections
+            /// </summary>
+            private void ServerLoop()
+            {
+                logFunc($"{Name} server thread started. Waiting for Python client connection...");
+                
+                while (IsRunning)
+                {
+                    try
+                    {
+                        // Check for pending connections
+                        if (Server.Pending())
+                        {
+                            // Accept the client connection
+                            Client = Server.AcceptTcpClient();
+                            Client.NoDelay = true;
+                            Client.SendBufferSize = 65536;
+                            Client.ReceiveBufferSize = 65536;
+                            
+                            // Get the client stream
+                            ClientStream = Client.GetStream();
+                            
+                            logFunc($"Python client connected to {Name} server from {Client.Client.RemoteEndPoint}");
+                            
+                            // Send welcome message
+                            string welcomeMessage = Name == "Data" ? "SERVER_READY\n" : "ORDER_SERVER_READY\n";
+                            SendMessage(welcomeMessage);
+                            
+                            // Update heartbeat time
+                            LastHeartbeatTime = DateTime.Now;
+                            
+                            // Send accumulated data from buffer for Data server
+                            while (messageBuffer.Count > 0)
+                            {
+                                try
+                                {
+                                    string data = messageBuffer.Dequeue();
+                                    SendMessage(data);
+                                }
+                                catch (Exception ex)
+                                {
+                                    logFunc($"Error sending buffered data: {ex.Message}");
+                                }
+                            }
+                            
+                            // Process data from the client
+                            byte[] buffer = new byte[4096];
+                            StringBuilder messageBuilder = new StringBuilder();
+                            
+                            // Main client data reception loop
+                            while (IsRunning && Client != null && Client.Connected)
+                            {
+                                // Check if there's data to read
+                                if (Client.Available > 0)
+                                {
+                                    int bytesRead = ClientStream.Read(buffer, 0, buffer.Length);
+                                    
+                                    if (bytesRead == 0)
+                                    {
+                                        // Connection closed by client
+                                        break;
+                                    }
+                                    
+                                    string data = Encoding.ASCII.GetString(buffer, 0, bytesRead);
+                                    messageBuilder.Append(data);
+                                    
+                                    // Process complete messages
+                                    string message = messageBuilder.ToString();
+                                    int newlineIndex;
+                                    
+                                    while ((newlineIndex = message.IndexOf('\n')) != -1)
+                                    {
+                                        // Extract complete message
+                                        string completeMessage = message.Substring(0, newlineIndex).Trim();
+                                        
+                                        // Remove the processed message from buffer
+                                        message = message.Substring(newlineIndex + 1);
+                                        
+                                        // Process the message
+                                        if (!string.IsNullOrEmpty(completeMessage))
+                                        {
+                                            // Handle PING directly here for faster response
+                                            if (completeMessage.Equals("PING", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                SendMessage("PONG\n");
+                                                LastHeartbeatTime = DateTime.Now;
+                                            }
+                                            else
+                                            {
+                                                // Notify subscribers about received message
+                                                OnMessageReceived?.Invoke(completeMessage);
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Update buffer with remaining incomplete message
+                                    messageBuilder.Clear();
+                                    messageBuilder.Append(message);
+                                }
+                                
+                                // Short sleep to prevent high CPU usage
+                                Thread.Sleep(10);
+                                
+                                // Send heartbeat periodically
+                                if (DateTime.Now - LastHeartbeatTime > TimeSpan.FromSeconds(5))
+                                {
+                                    try
+                                    {
+                                        SendMessage("PING\n");
+                                        LastHeartbeatTime = DateTime.Now;
+                                    }
+                                    catch
+                                    {
+                                        // Connection might be broken
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Client disconnected or error occurred
+                            logFunc($"Python client disconnected from {Name} server");
+                            
+                            // Clean up client resources
+                            if (ClientStream != null)
+                            {
+                                try { ClientStream.Close(); } catch { }
+                                ClientStream = null;
+                            }
+                            
+                            if (Client != null)
+                            {
+                                try { Client.Close(); } catch { }
+                                Client = null;
+                            }
+                        }
+                        
+                        // Short sleep before checking for new connections
+                        Thread.Sleep(100);
+                    }
+                    catch (Exception ex)
+                    {
+                        logFunc($"Error in {Name} server loop: {ex.Message}");
+                        
+                        // Clean up client resources
+                        if (ClientStream != null)
+                        {
+                            try { ClientStream.Close(); } catch { }
+                            ClientStream = null;
+                        }
+                        
+                        if (Client != null)
+                        {
+                            try { Client.Close(); } catch { }
+                            Client = null;
+                        }
+                        
+                        // Short delay before retrying
+                        Thread.Sleep(1000);
+                    }
+                }
+                
+                logFunc($"{Name} server thread stopped");
+            }
+        }
+        #endregion
+        
         #region Variables
-        // Server components
-        private TcpListener dataServer;
-        private TcpListener orderServer;
-        private TcpClient dataClient;
-        private TcpClient orderClient;
-        private NetworkStream dataClientStream;
-        private NetworkStream orderClientStream;
+        // Server components using optimized manager
+        private TcpServerManager dataServer;
+        private TcpServerManager orderServer;
         private string listenIP = "127.0.0.1";
         private int dataPort = 5000;
         private int orderPort = 5001;
-        private DateTime lastConnectionAttempt = DateTime.MinValue;
-        private bool isConnecting = false;
-        private int reconnectInterval = 5; // seconds
         private int dataBufferSize = 60; // Number of bars to buffer
         private Queue<string> dataBuffer = new Queue<string>();
         private bool isInitialDataSent = false;
-        private Thread dataServerThread;
-        private Thread orderServerThread;
-        private bool isDataServerRunning = false;
-        private bool isOrderServerRunning = false;
+        private bool connectionErrorLogged = false; // Prevent log spam
         private int lastMinute = -1;
         private bool waitForFullBar = true;
-        private bool connectionErrorLogged = false; // Prevent log spam
         
         // Data extraction variables
         private bool isExtractingData = false;
@@ -69,6 +484,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         private EMA emaLong;
         private ATR atr;
         private ADX adx;
+        
+        // Variable to store the date from which to filter data
+        private DateTime? startFromDate = null;
         #endregion
 
         #region Properties
@@ -163,6 +581,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 
                 // Add indicators for calculations
                 AddPlot(new Stroke(System.Windows.Media.Brushes.DodgerBlue, 2), PlotStyle.Line, "ConnectionStatus");
+                
+                // Initialize TCP server managers
+                dataServer = new TcpServerManager("Data", listenIP, dataPort, dataBufferSize, ConnectionTimeout, Print);
+                orderServer = new TcpServerManager("Order", listenIP, orderPort, dataBufferSize, ConnectionTimeout, Print);
+                
+                // Register message handlers
+                dataServer.OnMessageReceived += ProcessDataMessage;
+                orderServer.OnMessageReceived += ProcessOrderMessage;
             }
             else if (State == State.DataLoaded)
             {
@@ -181,9 +607,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     // Start the servers
                     Print("Starting data and order servers...");
                     
-                    bool dataServerStarted = StartDataServer();
+                    bool dataServerStarted = dataServer.Start();
                     Thread.Sleep(500);
-                    bool orderServerStarted = StartOrderServer();
+                    bool orderServerStarted = orderServer.Start();
                     
                     if (dataServerStarted && orderServerStarted) {
                         Print("Servers started successfully. Waiting for Python client to connect...");
@@ -197,8 +623,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             else if (State == State.Terminated)
             {
                 // Stop servers and close client connections when terminated
-                StopDataServer();
-                StopOrderServer();
+                dataServer.Stop();
+                orderServer.Stop();
             }
         }
 
@@ -213,8 +639,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
             
             // Update the connection status plot
-            bool isConnected = (dataClient != null && dataClient.Connected && 
-                               orderClient != null && orderClient.Connected);
+            bool isConnected = (dataServer.IsConnected && orderServer.IsConnected);
             IsConnected[0] = isConnected;
             Values[0][0] = isConnected ? 1 : 0;
             
@@ -252,221 +677,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 SendBarData(0);
             }
         }
-
-        #region Data Server Methods
-        private bool StartDataServer()
-        {
-            if (isDataServerRunning)
-                return true;
-                
-            try
-            {
-                // Close any existing connections first
-                StopDataServer();
-                
-                // Set up a TCP listener for the data port
-                // NinjaTrader now acts as server, listening for Python client
-                Print($"Starting data server on {listenIP}:{dataPort}...");
-                
-                // Display local IP for debugging
-                try {
-                    IPHostEntry host = Dns.GetHostEntry(Dns.GetHostName());
-                    foreach(IPAddress ip in host.AddressList) {
-                        Print($"Available local IP: {ip.ToString()}");
-                    }
-                } catch (Exception ex) {
-                    Print($"Error getting local IPs: {ex.Message}");
-                }
-                
-                // Create server on loopback address
-                IPAddress ipAddress = IPAddress.Parse(listenIP);
-                dataServer = new TcpListener(ipAddress, dataPort);
-                
-                // Start listening
-                dataServer.Start();
-                Print($"Data server started on {listenIP}:{dataPort}");
-                
-                // Start the server thread to accept connections
-                isDataServerRunning = true;
-                dataServerThread = new Thread(DataServerLoop);
-                dataServerThread.IsBackground = true;
-                dataServerThread.Start();
-                
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Print($"Error starting data server: {ex.Message}");
-                
-                // Cleanup in case of failure
-                if (dataServer != null)
-                {
-                    try { dataServer.Stop(); } catch { }
-                    dataServer = null;
-                }
-                
-                isDataServerRunning = false;
-                return false;
-            }
-        }
         
-        private void DataServerLoop()
-        {
-            Print("Data server thread started. Waiting for Python client connection...");
-            
-            while (isDataServerRunning)
-            {
-                try
-                {
-                    // Check for pending connections
-                    if (dataServer.Pending())
-                    {
-                        // Accept the client connection
-                        dataClient = dataServer.AcceptTcpClient();
-                        dataClient.NoDelay = true;
-                        dataClient.SendBufferSize = 65536;
-                        dataClient.ReceiveBufferSize = 65536;
-                        
-                        // Get the client stream
-                        dataClientStream = dataClient.GetStream();
-                        
-                        Print($"Python client connected to data server from {dataClient.Client.RemoteEndPoint}");
-                        
-                        // Send welcome message
-                        SendDataMessage("SERVER_READY\n");
-                        
-                        // Process data from the client
-                        byte[] buffer = new byte[4096];
-                        StringBuilder messageBuilder = new StringBuilder();
-                        
-                        // Send accumulated data from buffer
-                        while (dataBuffer.Count > 0)
-                        {
-                            try
-                            {
-                                string data = dataBuffer.Dequeue();
-                                SendDataMessage(data);
-                            }
-                            catch (Exception ex)
-                            {
-                                Print($"Error sending buffered data: {ex.Message}");
-                            }
-                        }
-                        
-                        // Main client data reception loop
-                        while (isDataServerRunning && dataClient != null && dataClient.Connected)
-                        {
-                            // Check if there's data to read
-                            if (dataClient.Available > 0)
-                            {
-                                int bytesRead = dataClientStream.Read(buffer, 0, buffer.Length);
-                                
-                                if (bytesRead == 0)
-                                {
-                                    // Connection closed by client
-                                    break;
-                                }
-                                
-                                string data = Encoding.ASCII.GetString(buffer, 0, bytesRead);
-                                messageBuilder.Append(data);
-                                
-                                // Process complete messages
-                                string message = messageBuilder.ToString();
-                                int newlineIndex;
-                                
-                                while ((newlineIndex = message.IndexOf('\n')) != -1)
-                                {
-                                    // Extract complete message
-                                    string completeMessage = message.Substring(0, newlineIndex).Trim();
-                                    
-                                    // Remove the processed message from buffer
-                                    message = message.Substring(newlineIndex + 1);
-                                    
-                                    // Process the message
-                                    if (!string.IsNullOrEmpty(completeMessage))
-                                    {
-                                        ProcessDataClientMessage(completeMessage);
-                                    }
-                                }
-                                
-                                // Update buffer with remaining incomplete message
-                                messageBuilder.Clear();
-                                messageBuilder.Append(message);
-                            }
-                            
-                            // Short sleep to prevent high CPU usage
-                            Thread.Sleep(10);
-                            
-                            // Send heartbeat periodically
-                            if (DateTime.Now - lastConnectionAttempt > TimeSpan.FromSeconds(5))
-                            {
-                                try
-                                {
-                                    SendDataMessage("PING\n");
-                                    lastConnectionAttempt = DateTime.Now;
-                                }
-                                catch
-                                {
-                                    // Connection might be broken
-                                    break;
-                                }
-                            }
-                        }
-                        
-                        // Client disconnected or error occurred
-                        Print("Python client disconnected from data server");
-                        
-                        // Clean up client resources
-                        if (dataClientStream != null)
-                        {
-                            try { dataClientStream.Close(); } catch { }
-                            dataClientStream = null;
-                        }
-                        
-                        if (dataClient != null)
-                        {
-                            try { dataClient.Close(); } catch { }
-                            dataClient = null;
-                        }
-                    }
-                    
-                    // Short sleep before checking for new connections
-                    Thread.Sleep(100);
-                }
-                catch (Exception ex)
-                {
-                    Print($"Error in data server loop: {ex.Message}");
-                    
-                    // Clean up client resources
-                    if (dataClientStream != null)
-                    {
-                        try { dataClientStream.Close(); } catch { }
-                        dataClientStream = null;
-                    }
-                    
-                    if (dataClient != null)
-                    {
-                        try { dataClient.Close(); } catch { }
-                        dataClient = null;
-                    }
-                    
-                    // Short delay before retrying
-                    Thread.Sleep(1000);
-                }
-            }
-            
-            Print("Data server thread stopped");
-        }
-        
-        private void ProcessDataClientMessage(string message)
+        #region Message Processing Methods
+        private void ProcessDataMessage(string message)
         {
             try
             {
                 // Handle incoming messages from Python client
                 if (message.Equals("PONG", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Heartbeat response
-                    lastConnectionAttempt = DateTime.Now;
+                    // Heartbeat response - handled in server manager
                     return;
                 }
                 
@@ -481,647 +701,30 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                     
                     // Respond with server info
-                    SendDataMessage($"SERVER_INFO:NinjaTrader:{Instrument.MasterInstrument.Name}\n");
+                    dataServer.SendMessage($"SERVER_INFO:NinjaTrader:{Instrument.MasterInstrument.Name}\n");
+                    return;
+                }
+                
+                // Process trade execution message (could come from data or order channel)
+                if (message.StartsWith("TRADE_EXECUTED:"))
+                {
+                    HandleTradeExecutionMessage(message);
+                    return;
+                }
+                
+                // Handle data extraction messages
+                if (message.StartsWith("EXTRACTION_") || message.Equals(extractionCommand))
+                {
+                    HandleExtractionMessage(message);
                     return;
                 }
                 
                 // Log other messages
-                Print($"Received from Python client: {message}");
+                Print($"Received from Python data client: {message}");
             }
             catch (Exception ex)
             {
-                Print($"Error processing data client message: {ex.Message}");
-            }
-        }
-
-        private void StopDataServer()
-        {
-            try
-            {
-                // First mark thread as stopping
-                isDataServerRunning = false;
-                
-                // Close client streams and connections
-                if (dataClientStream != null)
-                {
-                    try 
-                    {
-                        dataClientStream.Flush();
-                        dataClientStream.Close();
-                    }
-                    catch (Exception ex)
-                    {
-                        Print($"Error closing data client stream: {ex.Message}");
-                    }
-                    finally
-                    {
-                        dataClientStream = null;
-                    }
-                }
-                
-                if (dataClient != null)
-                {
-                    try
-                    {
-                        dataClient.Close();
-                    }
-                    catch (Exception ex)
-                    {
-                        Print($"Error closing data client: {ex.Message}");
-                    }
-                    finally
-                    {
-                        dataClient = null;
-                    }
-                }
-                
-                // Stop the server
-                if (dataServer != null)
-                {
-                    try
-                    {
-                        dataServer.Stop();
-                    }
-                    catch (Exception ex)
-                    {
-                        Print($"Error stopping data server: {ex.Message}");
-                    }
-                    finally
-                    {
-                        dataServer = null;
-                    }
-                }
-                
-                // Wait for thread to terminate
-                if (dataServerThread != null && dataServerThread.IsAlive)
-                {
-                    try
-                    {
-                        dataServerThread.Join(2000);
-                        if (dataServerThread.IsAlive)
-                        {
-                            // Not ideal but needed in case thread is stuck
-                            dataServerThread.Abort();
-                        }
-                    }
-                    catch { }
-                    dataServerThread = null;
-                }
-                
-                Print("Data server stopped successfully");
-            }
-            catch (Exception ex)
-            {
-                Print($"Error stopping data server: {ex.Message}");
-            }
-            finally
-            {
-                // Force resource cleanup
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-            }
-        }
-
-        // Method for extracting historical data on demand
-		public void StartHistoricalDataExtraction()
-		{
-		    if (isExtractingData)
-		    {
-		        Print("Historical data extraction already in progress");
-		        return;
-		    }
-		    
-		    int reasonableLimit = 5000;
-		    int availableBars = Math.Min(Math.Min(CurrentBar + 1, MaxHistoricalBars), reasonableLimit);
-		    
-		    if (availableBars <= 0)
-		    {
-		        Print("Not enough bars available for extraction");
-		        return;
-		    }
-		    
-		    string instrumentName = Instrument.MasterInstrument.Name;
-		    
-		    isExtractingData = true;
-		    isExtractionComplete = false;
-		    totalBarsToExtract = availableBars;
-		    extractedBarsCount = 0;
-		    
-		    Print($"******* STARTING EXTRACTION *******");
-		    Print($"Starting extraction of {totalBarsToExtract} historical bars for {instrumentName}...");
-		    Print($"CurrentBar: {CurrentBar}, Using {availableBars} bars (limited to reasonable size)");
-		    
-		    string startMessage = $"EXTRACTION_START:{totalBarsToExtract}:{instrumentName}\n";
-		    SendDataMessage(startMessage);
-		    Print($"Sent extraction start message: {startMessage.Trim()}");
-		    
-		    this.Dispatcher.InvokeAsync(() => 
-		    {
-		        Print("Initiating first batch of data extraction...");
-		        SendHistoricalBatch();
-		        Print($"Initial batch of historical data sent. Progress: {(double)extractedBarsCount / totalBarsToExtract * 100:F1}%");
-		        
-		        this.Dispatcher.InvokeAsync(() => 
-		        {
-		            while (isExtractingData && !isExtractionComplete)
-		            {
-		                SendHistoricalBatch();
-		                System.Threading.Thread.Sleep(100);
-		            }
-		        });
-		    });
-		}
-        
-        // Variable to store the date from which to filter data
-        private DateTime? startFromDate = null;
-		
-		private string FormatBarData(int barsAgo, bool isHistorical = false)
-		{
-		    // Format a bar's data into a string
-		    try
-		    {
-		        // Verificar que el índice barsAgo sea válido
-		        if (barsAgo < 0 || barsAgo > CurrentBar)
-		        {
-		            Print($"Invalid barsAgo={barsAgo}, CurrentBar={CurrentBar}");
-		            return null;
-		        }
-		
-		        // Create formatter string
-		        string formatPrefix = isHistorical ? "HISTORICAL:" : "";
-		        string barData = string.Format("{0}{1},{2},{3},{4},{5},{6},{7},{8},{9}",
-		            formatPrefix,
-		            Open[barsAgo].ToString("F2"),
-		            High[barsAgo].ToString("F2"),
-		            Low[barsAgo].ToString("F2"),
-		            Close[barsAgo].ToString("F2"),
-		            emaShort[barsAgo].ToString("F2"),
-		            emaLong[barsAgo].ToString("F2"),
-		            atr[barsAgo].ToString("F2"),
-		            adx[barsAgo].ToString("F2"),
-		            Time[barsAgo].ToString("yyyy-MM-dd HH:mm:ss"));
-		        
-		        // Add newline for message separation
-		        return barData + "\n";
-		    }
-		    catch (Exception ex)
-		    {
-		        Print($"Error formatting bar data for barsAgo={barsAgo}: {ex.Message}");
-		        return null;
-		    }
-		}
-        
-		private void SendHistoricalBatch()
-		{
-		    int batchSize = 100;
-		    int barsToSend = Math.Min(batchSize, totalBarsToExtract - extractedBarsCount);
-		    
-		    if (barsToSend <= 0)
-		    {
-		        if (!isExtractionComplete)
-		        {
-		            string instrumentName = Instrument.MasterInstrument.Name;
-		            string completeMessage = $"EXTRACTION_COMPLETE:{instrumentName}\n";
-		            SendDataMessage(completeMessage);
-		            
-		            isExtractionComplete = true;
-		            isExtractingData = false;
-		            Print($"Historical data extraction completed for {instrumentName}: {extractedBarsCount} bars sent");
-		            
-		            startFromDate = null;
-		        }
-		        return;
-		    }
-		    
-		    int sentInThisBatch = 0;
-		    
-		    try
-		    {
-		        if (CurrentBar < barsToSend - 1)
-		        {
-		            Print($"Not enough bars available. CurrentBar: {CurrentBar}, barsToSend: {barsToSend}");
-		            return;
-		        }
-		        
-		        Print($"Sending batch: CurrentBar={CurrentBar}, from={extractedBarsCount} to {extractedBarsCount + barsToSend - 1}");
-		        
-		        for (int i = 0; i < barsToSend; i++)
-		        {
-		            // Calculate barsAgo based on extraction count and current index
-		            int barsAgo = CurrentBar - extractedBarsCount - i;
-		            
-		            if (barsAgo >= 0 && barsAgo <= CurrentBar)
-		            {
-		                try
-		                {
-		                    // Use the common FormatBarData method to create the message
-		                    string message = FormatBarData(barsAgo, true);
-		                    if (message != null)
-		                    {
-		                        if (i % 20 == 0)
-		                        {
-		                            Print($"Sending bar: barsAgo={barsAgo}, time={Time[barsAgo].ToString()}");
-		                        }
-		                        SendDataMessage(message);
-		                        sentInThisBatch++;
-		                    }
-		                }
-		                catch (Exception ex)
-		                {
-		                    Print($"Error sending bar with barsAgo={barsAgo}: {ex.Message}");
-		                }
-		            }
-		            else
-		            {
-		                Print($"Warning: skipping bar with barsAgo={barsAgo} - out of range [0, {CurrentBar}]");
-		            }
-		        }
-		    }
-		    catch (Exception ex)
-		    {
-		        Print($"Error sending batch: {ex.Message}");
-		    }
-		    
-		    extractedBarsCount += sentInThisBatch;
-		    
-		    double progressPercent = totalBarsToExtract > 0 ? (double)extractedBarsCount / totalBarsToExtract * 100 : 0;
-		    string progressMessage = $"EXTRACTION_PROGRESS:{extractedBarsCount}:{totalBarsToExtract}:{progressPercent:F1}\n";
-		    SendDataMessage(progressMessage);
-		    
-		    if (extractedBarsCount >= totalBarsToExtract)
-		    {
-		        string instrumentName = Instrument.MasterInstrument.Name;
-		        string completeMessage = $"EXTRACTION_COMPLETE:{instrumentName}\n";
-		        SendDataMessage(completeMessage);
-		        
-		        isExtractionComplete = true;
-		        isExtractingData = false;
-		        Print($"Historical data extraction completed for {instrumentName}: {extractedBarsCount} bars sent");
-		    }
-		    
-		    Print($"Extraction progress: {progressPercent:F1}% ({extractedBarsCount}/{totalBarsToExtract}, sent {sentInThisBatch} bars in this batch)");
-		}
-        
-        private void SendBarData(int barIndex)
-        {
-            if (barIndex < 0 || barIndex >= CurrentBar)
-            {
-                Print($"Invalid bar index for SendBarData: {barIndex}, CurrentBar: {CurrentBar}");
-                return;
-            }
-                
-            try
-            {
-                // En NinjaTrader, debemos utilizar BarsAgo, que es la DIFERENCIA entre CurrentBar y el índice deseado
-                int barsAgo = CurrentBar - barIndex;
-                
-                // Format and send the data
-                string message = FormatBarData(barsAgo, false);
-                if (message != null)
-                {
-                    SendDataMessage(message);
-                }
-            }
-            catch (Exception ex)
-            {
-                Print($"Error sending data for index {barIndex}: {ex.Message}");
-            }
-        }
-        
-        private void SendDataMessage(string message)
-        {
-            try
-            {
-                // Check if connected to a client
-                if (dataClient != null && dataClient.Connected && dataClientStream != null)
-                {
-                    // Send data directly
-                    byte[] data = Encoding.ASCII.GetBytes(message);
-                    dataClientStream.Write(data, 0, data.Length);
-                }
-                else
-                {
-                    // Buffer the data for when a client connects
-                    dataBuffer.Enqueue(message);
-                    
-                    // Limit buffer size
-                    while (dataBuffer.Count > dataBufferSize)
-                    {
-                        dataBuffer.Dequeue();
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Print("Error sending data message: " + ex.Message);
-                
-                // Buffer the message in case client reconnects
-                dataBuffer.Enqueue(message);
-                
-                // Limit buffer size
-                while (dataBuffer.Count > dataBufferSize)
-                {
-                    dataBuffer.Dequeue();
-                }
-                
-                // Client connection might be broken, clean up
-                if (dataClientStream != null)
-                {
-                    try { dataClientStream.Close(); } catch { }
-                    dataClientStream = null;
-                }
-                
-                if (dataClient != null)
-                {
-                    try { dataClient.Close(); } catch { }
-                    dataClient = null;
-                }
-            }
-        }
-        #endregion
-
-        #region Order Server Methods
-        private bool StartOrderServer()
-        {
-            if (isOrderServerRunning)
-                return true;
-                
-            try
-            {
-                // Close any existing connections first
-                StopOrderServer();
-                
-                // Set up a TCP listener for the order port
-                // NinjaTrader now acts as server, listening for Python client
-                Print($"Starting order server on {listenIP}:{orderPort}...");
-                
-                // Create server on loopback address
-                IPAddress ipAddress = IPAddress.Parse(listenIP);
-                orderServer = new TcpListener(ipAddress, orderPort);
-                
-                // Start listening
-                orderServer.Start();
-                Print($"Order server started on {listenIP}:{orderPort}");
-                
-                // Start the server thread to accept connections
-                isOrderServerRunning = true;
-                orderServerThread = new Thread(OrderServerLoop);
-                orderServerThread.IsBackground = true;
-                orderServerThread.Start();
-                
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Print($"Error starting order server: {ex.Message}");
-                
-                // Cleanup in case of failure
-                if (orderServer != null)
-                {
-                    try { orderServer.Stop(); } catch { }
-                    orderServer = null;
-                }
-                
-                isOrderServerRunning = false;
-                return false;
-            }
-        }
-        
-        private void OrderServerLoop()
-        {
-            Print("Order server thread started. Waiting for Python client connection...");
-            
-            while (isOrderServerRunning)
-            {
-                try
-                {
-                    // Check for pending connections
-                    if (orderServer.Pending())
-                    {
-                        // Accept the client connection
-                        orderClient = orderServer.AcceptTcpClient();
-                        orderClient.NoDelay = true;
-                        orderClient.SendBufferSize = 65536;
-                        orderClient.ReceiveBufferSize = 65536;
-                        
-                        // Get the client stream
-                        orderClientStream = orderClient.GetStream();
-                        
-                        Print($"Python client connected to order server from {orderClient.Client.RemoteEndPoint}");
-                        
-                        // Send welcome message
-                        SendOrderMessage("ORDER_SERVER_READY\n");
-                        
-                        // Process data from the client
-                        byte[] buffer = new byte[4096];
-                        StringBuilder messageBuilder = new StringBuilder();
-                        
-                        // Main client data reception loop
-                        while (isOrderServerRunning && orderClient != null && orderClient.Connected)
-                        {
-                            // Check if there's data to read
-                            if (orderClient.Available > 0)
-                            {
-                                int bytesRead = orderClientStream.Read(buffer, 0, buffer.Length);
-                                
-                                if (bytesRead == 0)
-                                {
-                                    // Connection closed by client
-                                    break;
-                                }
-                                
-                                string data = Encoding.ASCII.GetString(buffer, 0, bytesRead);
-                                messageBuilder.Append(data);
-                                
-                                // Process complete messages
-                                string message = messageBuilder.ToString();
-                                int newlineIndex;
-                                
-                                while ((newlineIndex = message.IndexOf('\n')) != -1)
-                                {
-                                    // Extract complete message
-                                    string completeMessage = message.Substring(0, newlineIndex).Trim();
-                                    
-                                    // Remove the processed message from buffer
-                                    message = message.Substring(newlineIndex + 1);
-                                    
-                                    // Process the message
-                                    if (!string.IsNullOrEmpty(completeMessage))
-                                    {
-                                        ProcessOrderMessage(completeMessage);
-                                    }
-                                }
-                                
-                                // Update buffer with remaining incomplete message
-                                messageBuilder.Clear();
-                                messageBuilder.Append(message);
-                            }
-                            
-                            // Short sleep to prevent high CPU usage
-                            Thread.Sleep(10);
-                        }
-                        
-                        // Client disconnected or error occurred
-                        Print("Python client disconnected from order server");
-                        
-                        // Clean up client resources
-                        if (orderClientStream != null)
-                        {
-                            try { orderClientStream.Close(); } catch { }
-                            orderClientStream = null;
-                        }
-                        
-                        if (orderClient != null)
-                        {
-                            try { orderClient.Close(); } catch { }
-                            orderClient = null;
-                        }
-                    }
-                    
-                    // Short sleep before checking for new connections
-                    Thread.Sleep(100);
-                }
-                catch (Exception ex)
-                {
-                    Print($"Error in order server loop: {ex.Message}");
-                    
-                    // Clean up client resources
-                    if (orderClientStream != null)
-                    {
-                        try { orderClientStream.Close(); } catch { }
-                        orderClientStream = null;
-                    }
-                    
-                    if (orderClient != null)
-                    {
-                        try { orderClient.Close(); } catch { }
-                        orderClient = null;
-                    }
-                    
-                    // Short delay before retrying
-                    Thread.Sleep(1000);
-                }
-            }
-            
-            Print("Order server thread stopped");
-        }
-        
-        private void StopOrderServer()
-        {
-            try
-            {
-                // First mark thread as stopping
-                isOrderServerRunning = false;
-                
-                // Close client streams and connections
-                if (orderClientStream != null)
-                {
-                    try 
-                    {
-                        orderClientStream.Flush();
-                        orderClientStream.Close();
-                    }
-                    catch (Exception ex)
-                    {
-                        Print($"Error closing order client stream: {ex.Message}");
-                    }
-                    finally
-                    {
-                        orderClientStream = null;
-                    }
-                }
-                
-                if (orderClient != null)
-                {
-                    try
-                    {
-                        orderClient.Close();
-                    }
-                    catch (Exception ex)
-                    {
-                        Print($"Error closing order client: {ex.Message}");
-                    }
-                    finally
-                    {
-                        orderClient = null;
-                    }
-                }
-                
-                // Stop the server
-                if (orderServer != null)
-                {
-                    try
-                    {
-                        orderServer.Stop();
-                    }
-                    catch (Exception ex)
-                    {
-                        Print($"Error stopping order server: {ex.Message}");
-                    }
-                    finally
-                    {
-                        orderServer = null;
-                    }
-                }
-                
-                // Wait for thread to terminate
-                if (orderServerThread != null && orderServerThread.IsAlive)
-                {
-                    try
-                    {
-                        orderServerThread.Join(2000);
-                        if (orderServerThread.IsAlive)
-                        {
-                            // Not ideal but needed in case thread is stuck
-                            orderServerThread.Abort();
-                        }
-                    }
-                    catch { }
-                    orderServerThread = null;
-                }
-                
-                Print("Order server stopped successfully");
-            }
-            catch (Exception ex)
-            {
-                Print($"Error stopping order server: {ex.Message}");
-            }
-            finally
-            {
-                // Force resource cleanup
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-            }
-        }
-        
-        private void SendOrderMessage(string message)
-        {
-            try
-            {
-                // Check if connected to a client
-                if (orderClient != null && orderClient.Connected && orderClientStream != null)
-                {
-                    // Send data directly
-                    byte[] data = Encoding.ASCII.GetBytes(message);
-                    orderClientStream.Write(data, 0, data.Length);
-                }
-            }
-            catch (Exception ex)
-            {
-                Print("Error sending order message: " + ex.Message);
-                
-                // Client connection might be broken, clean up
-                if (orderClientStream != null)
-                {
-                    try { orderClientStream.Close(); } catch { }
-                    orderClientStream = null;
-                }
-                
-                if (orderClient != null)
-                {
-                    try { orderClient.Close(); } catch { }
-                    orderClient = null;
-                }
+                Print($"Error processing data message: {ex.Message}");
             }
         }
         
@@ -1132,25 +735,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (string.IsNullOrEmpty(message))
                     return;
                 
+                // PING/HEARTBEAT handling already done in server manager
+                if (message.Equals("PING", StringComparison.OrdinalIgnoreCase) ||
+                    message.Equals("PONG", StringComparison.OrdinalIgnoreCase) ||
+                    message.Equals("HEARTBEAT", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+                
+                // Print all other messages for debugging
                 Print("Received order message: " + message);
-                
-                // PING/HEARTBEAT handling to keep connection active
-                if (message.Equals("PING", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Respond with PONG to confirm connection 
-                    try {
-                        SendOrderMessage("PONG\n");
-                    } catch (Exception ex) {
-                        Print("Error sending PONG response: " + ex.Message);
-                    }
-                    return;
-                }
-                
-                if (message.Equals("HEARTBEAT", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Just to keep connection active, no response needed
-                    return;
-                }
                 
                 // Check for special command messages
                 if (message.StartsWith(extractionCommand) || message.Equals("EXTRACT_HISTORICAL_DATA"))
@@ -1183,82 +777,374 @@ namespace NinjaTrader.NinjaScript.Indicators
                     return;
                 }
                 
+                // Process trade execution message (could come from data or order channel)
+                if (message.StartsWith("TRADE_EXECUTED:"))
+                {
+                    HandleTradeExecutionMessage(message);
+                    return;
+                }
+                
                 // Process trading signals from Python
-                string[] commandParts = message.Split(',');
-                
-                if (commandParts.Length < 5)
-                {
-                    Print("Invalid order message format. Expected at least 5 parameters.");
-                    // Send error response to client
-                    SendOrderMessage("ERROR:Invalid_Format\n");
-                    return;
-                }
-                
-                // Parse parameters
-                int tradeSignal;
-                int emaChoice;
-                double positionSize;
-                double stopLoss;
-                double takeProfit;
-                
-                if (!int.TryParse(commandParts[0], out tradeSignal) ||
-                    !int.TryParse(commandParts[1], out emaChoice) ||
-                    !double.TryParse(commandParts[2], out positionSize) ||
-                    !double.TryParse(commandParts[3], out stopLoss) ||
-                    !double.TryParse(commandParts[4], out takeProfit))
-                {
-                    Print("Invalid order message data. Could not parse values.");
-                    SendOrderMessage("ERROR:Invalid_Values\n");
-                    return;
-                }
-                
-                // Validate parameters
-                if (tradeSignal < -1 || tradeSignal > 1)
-                {
-                    Print("Invalid trade signal: " + tradeSignal);
-                    SendOrderMessage("ERROR:Invalid_Signal\n");
-                    return;
-                }
-                
-                if (emaChoice < 0 || emaChoice > 2)
-                {
-                    Print("Invalid EMA choice: " + emaChoice);
-                    SendOrderMessage("ERROR:Invalid_EMA\n");
-                    return;
-                }
-                
-                if (positionSize <= 0 || positionSize > 10)
-                {
-                    Print("Invalid position size: " + positionSize);
-                    SendOrderMessage("ERROR:Invalid_Size\n");
-                    return;
-                }
-                
-                // Call the delegate if it's assigned
-                if (OnTradeSignalReceived != null)
-                {
-                    this.Dispatcher.InvokeAsync(() => {
-                        OnTradeSignalReceived(tradeSignal, emaChoice, positionSize, stopLoss, takeProfit);
-                    });
-                }
-                
-                // Confirm the message was processed correctly
-                SendOrderMessage($"ORDER_CONFIRMED:{tradeSignal},{emaChoice},{positionSize}\n");
+                ProcessTradingSignal(message);
             }
             catch (Exception ex)
             {
-                Print("Error processing order message: " + ex.Message);
-                SendOrderMessage("ERROR:Processing_Error\n");
+                Print($"Error processing order message: {ex.Message}");
+                orderServer.SendMessage("ERROR:Processing_Error\n");
             }
         }
         
+        private void ProcessTradingSignal(string message)
+        {
+            string[] commandParts = message.Split(',');
+            
+            if (commandParts.Length < 5)
+            {
+                Print("Invalid order message format. Expected at least 5 parameters.");
+                // Send error response to client
+                orderServer.SendMessage("ERROR:Invalid_Format\n");
+                return;
+            }
+            
+            // Parse parameters
+            int tradeSignal;
+            int emaChoice;
+            double positionSize;
+            double stopLoss;
+            double takeProfit;
+            
+            if (!int.TryParse(commandParts[0], out tradeSignal) ||
+                !int.TryParse(commandParts[1], out emaChoice) ||
+                !double.TryParse(commandParts[2], out positionSize) ||
+                !double.TryParse(commandParts[3], out stopLoss) ||
+                !double.TryParse(commandParts[4], out takeProfit))
+            {
+                Print("Invalid order message data. Could not parse values.");
+                orderServer.SendMessage("ERROR:Invalid_Values\n");
+                return;
+            }
+            
+            // Validate parameters
+            if (tradeSignal < -1 || tradeSignal > 1)
+            {
+                Print("Invalid trade signal: " + tradeSignal);
+                orderServer.SendMessage("ERROR:Invalid_Signal\n");
+                return;
+            }
+            
+            if (emaChoice < 0 || emaChoice > 2)
+            {
+                Print("Invalid EMA choice: " + emaChoice);
+                orderServer.SendMessage("ERROR:Invalid_EMA\n");
+                return;
+            }
+            
+            if (positionSize <= 0 || positionSize > 10)
+            {
+                Print("Invalid position size: " + positionSize);
+                orderServer.SendMessage("ERROR:Invalid_Size\n");
+                return;
+            }
+            
+            // Call the delegate if it's assigned
+            if (OnTradeSignalReceived != null)
+            {
+                this.Dispatcher.InvokeAsync(() => {
+                    OnTradeSignalReceived(tradeSignal, emaChoice, positionSize, stopLoss, takeProfit);
+                });
+            }
+            
+            // Confirm the message was processed correctly
+            orderServer.SendMessage($"ORDER_CONFIRMED:{tradeSignal},{emaChoice},{positionSize}\n");
+        }
+        
+        private void HandleTradeExecutionMessage(string message)
+        {
+            try
+            {
+                string[] parts = message.Substring(15).Split(',');  // Remove "TRADE_EXECUTED:" prefix
+                if (parts.Length >= 5)
+                {
+                    string action = parts[0];
+                    double entryPrice = 0, exitPrice = 0, pnl = 0;
+                    int quantity = 0;
+                    
+                    // Parse values with proper error handling
+                    double.TryParse(parts[1], out entryPrice);
+                    double.TryParse(parts[2], out exitPrice);
+                    double.TryParse(parts[3], out pnl);
+                    int.TryParse(parts[4], out quantity);
+                    
+                    Print($"Trade execution: {action}, P&L: {pnl}, Size: {quantity}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"Error processing trade execution: {ex.Message}");
+            }
+        }
+        
+        private void HandleExtractionMessage(string message)
+        {
+            try
+            {
+                // Handle extraction-related messages
+                if (message.StartsWith("EXTRACTION_START"))
+                {
+                    // Extract the total bars count and instrument name
+                    string[] parts = message.Split(':');
+                    if (parts.Length > 1)
+                    {
+                        totalBarsToExtract = int.Parse(parts[1]);
+                        extractedBarsCount = 0;
+                        isExtractingData = true;
+                        isExtractionComplete = false;
+                        
+                        // Extract instrument name if available
+                        string instrumentName = "Unknown";
+                        if (parts.Length > 2)
+                        {
+                            instrumentName = parts[2].Trim();
+                        }
+                        
+                        Print($"Starting extraction of {totalBarsToExtract} bars for {instrumentName}");
+                    }
+                }
+                else if (message.StartsWith("CHECK_EXISTING_DATA"))
+                {
+                    // Respond with available data
+                    string[] parts = message.Split(':');
+                    if (parts.Length > 1)
+                    {
+                        string instrumentName = parts[1].Trim();
+                        orderServer.SendMessage($"NO_EXISTING_DATA:{instrumentName}\n");
+                    }
+                }
+                else if (message.Equals(extractionCommand))
+                {
+                    // Start historical data extraction
+                    this.Dispatcher.InvokeAsync(() => StartHistoricalDataExtraction());
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"Error handling extraction message: {ex.Message}");
+            }
+        }
+        #endregion
+        
+        #region Historical Data Extraction
+        public void StartHistoricalDataExtraction()
+        {
+            if (isExtractingData)
+            {
+                Print("Historical data extraction already in progress");
+                return;
+            }
+            
+            int reasonableLimit = 5000;
+            int availableBars = Math.Min(Math.Min(CurrentBar + 1, MaxHistoricalBars), reasonableLimit);
+            
+            if (availableBars <= 0)
+            {
+                Print("Not enough bars available for extraction");
+                return;
+            }
+            
+            string instrumentName = Instrument.MasterInstrument.Name;
+            
+            isExtractingData = true;
+            isExtractionComplete = false;
+            totalBarsToExtract = availableBars;
+            extractedBarsCount = 0;
+            
+            Print($"******* STARTING EXTRACTION *******");
+            Print($"Starting extraction of {totalBarsToExtract} historical bars for {instrumentName}...");
+            Print($"CurrentBar: {CurrentBar}, Using {availableBars} bars (limited to reasonable size)");
+            
+            string startMessage = $"EXTRACTION_START:{totalBarsToExtract}:{instrumentName}\n";
+            dataServer.SendMessage(startMessage);
+            Print($"Sent extraction start message: {startMessage.Trim()}");
+            
+            this.Dispatcher.InvokeAsync(() => 
+            {
+                Print("Initiating first batch of data extraction...");
+                SendHistoricalBatch();
+                Print($"Initial batch of historical data sent. Progress: {(double)extractedBarsCount / totalBarsToExtract * 100:F1}%");
+                
+                this.Dispatcher.InvokeAsync(() => 
+                {
+                    while (isExtractingData && !isExtractionComplete)
+                    {
+                        SendHistoricalBatch();
+                        System.Threading.Thread.Sleep(100);
+                    }
+                });
+            });
+        }
+        
+        private string FormatBarData(int barsAgo, bool isHistorical = false)
+        {
+            // Format a bar's data into a string
+            try
+            {
+                // Verificar que el índice barsAgo sea válido
+                if (barsAgo < 0 || barsAgo > CurrentBar)
+                {
+                    Print($"Invalid barsAgo={barsAgo}, CurrentBar={CurrentBar}");
+                    return null;
+                }
+        
+                // Create formatter string
+                string formatPrefix = isHistorical ? "HISTORICAL:" : "";
+                string barData = string.Format("{0}{1},{2},{3},{4},{5},{6},{7},{8},{9}",
+                    formatPrefix,
+                    Open[barsAgo].ToString("F2"),
+                    High[barsAgo].ToString("F2"),
+                    Low[barsAgo].ToString("F2"),
+                    Close[barsAgo].ToString("F2"),
+                    emaShort[barsAgo].ToString("F2"),
+                    emaLong[barsAgo].ToString("F2"),
+                    atr[barsAgo].ToString("F2"),
+                    adx[barsAgo].ToString("F2"),
+                    Time[barsAgo].ToString("yyyy-MM-dd HH:mm:ss"));
+                
+                // Add newline for message separation
+                return barData + "\n";
+            }
+            catch (Exception ex)
+            {
+                Print($"Error formatting bar data for barsAgo={barsAgo}: {ex.Message}");
+                return null;
+            }
+        }
+        
+        private void SendHistoricalBatch()
+        {
+            int batchSize = 100;
+            int barsToSend = Math.Min(batchSize, totalBarsToExtract - extractedBarsCount);
+            
+            if (barsToSend <= 0)
+            {
+                if (!isExtractionComplete)
+                {
+                    string instrumentName = Instrument.MasterInstrument.Name;
+                    string completeMessage = $"EXTRACTION_COMPLETE:{instrumentName}\n";
+                    dataServer.SendMessage(completeMessage);
+                    
+                    isExtractionComplete = true;
+                    isExtractingData = false;
+                    Print($"Historical data extraction completed for {instrumentName}: {extractedBarsCount} bars sent");
+                    
+                    startFromDate = null;
+                }
+                return;
+            }
+            
+            int sentInThisBatch = 0;
+            
+            try
+            {
+                if (CurrentBar < barsToSend - 1)
+                {
+                    Print($"Not enough bars available. CurrentBar: {CurrentBar}, barsToSend: {barsToSend}");
+                    return;
+                }
+                
+                Print($"Sending batch: CurrentBar={CurrentBar}, from={extractedBarsCount} to {extractedBarsCount + barsToSend - 1}");
+                
+                for (int i = 0; i < barsToSend; i++)
+                {
+                    // Calculate barsAgo based on extraction count and current index
+                    int barsAgo = CurrentBar - extractedBarsCount - i;
+                    
+                    if (barsAgo >= 0 && barsAgo <= CurrentBar)
+                    {
+                        try
+                        {
+                            // Use the common FormatBarData method to create the message
+                            string message = FormatBarData(barsAgo, true);
+                            if (message != null)
+                            {
+                                if (i % 20 == 0)
+                                {
+                                    Print($"Sending bar: barsAgo={barsAgo}, time={Time[barsAgo].ToString()}");
+                                }
+                                dataServer.SendMessage(message);
+                                sentInThisBatch++;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Print($"Error sending bar with barsAgo={barsAgo}: {ex.Message}");
+                        }
+                    }
+                    else
+                    {
+                        Print($"Warning: skipping bar with barsAgo={barsAgo} - out of range [0, {CurrentBar}]");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"Error sending batch: {ex.Message}");
+            }
+            
+            extractedBarsCount += sentInThisBatch;
+            
+            double progressPercent = totalBarsToExtract > 0 ? (double)extractedBarsCount / totalBarsToExtract * 100 : 0;
+            string progressMessage = $"EXTRACTION_PROGRESS:{extractedBarsCount}:{totalBarsToExtract}:{progressPercent:F1}\n";
+            dataServer.SendMessage(progressMessage);
+            
+            if (extractedBarsCount >= totalBarsToExtract)
+            {
+                string instrumentName = Instrument.MasterInstrument.Name;
+                string completeMessage = $"EXTRACTION_COMPLETE:{instrumentName}\n";
+                dataServer.SendMessage(completeMessage);
+                
+                isExtractionComplete = true;
+                isExtractingData = false;
+                Print($"Historical data extraction completed for {instrumentName}: {extractedBarsCount} bars sent");
+            }
+            
+            Print($"Extraction progress: {progressPercent:F1}% ({extractedBarsCount}/{totalBarsToExtract}, sent {sentInThisBatch} bars in this batch)");
+        }
+        
+        private void SendBarData(int barIndex)
+        {
+            if (barIndex < 0 || barIndex > CurrentBar)
+            {
+                Print($"Invalid bar index for SendBarData: {barIndex}, CurrentBar: {CurrentBar}");
+                return;
+            }
+                
+            try
+            {
+                // En NinjaTrader, debemos utilizar BarsAgo, que es la DIFERENCIA entre CurrentBar y el índice deseado
+                int barsAgo = CurrentBar - barIndex;
+                
+                // Format and send the data
+                string message = FormatBarData(barsAgo, false);
+                if (message != null)
+                {
+                    dataServer.SendMessage(message);
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"Error sending data for index {barIndex}: {ex.Message}");
+            }
+        }
+        #endregion
+
+        #region Public Methods
         // Public method to send trade execution data back to Python
         public void SendTradeExecutionUpdate(string action, double entryPrice, double exitPrice, double pnl, int quantity)
         {
             try
             {
                 string executionMessage = $"TRADE_EXECUTED:{action},{entryPrice},{exitPrice},{pnl},{quantity}\n";
-                SendOrderMessage(executionMessage);
+                orderServer.SendMessage(executionMessage);
                 Print($"Sent trade execution data: {action}, P&L: {pnl}");
             }
             catch (Exception ex)
@@ -1270,8 +1156,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         
         public override string ToString()
         {
-            bool dataConnected = (dataClient != null && dataClient.Connected);
-            bool orderConnected = (orderClient != null && orderClient.Connected);
+            bool dataConnected = dataServer != null && dataServer.IsConnected;
+            bool orderConnected = orderServer != null && orderServer.IsConnected;
             string status = " [";
             
             if (dataConnected && orderConnected)

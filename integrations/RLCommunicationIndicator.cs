@@ -670,22 +670,19 @@ namespace NinjaTrader.NinjaScript.Indicators
 		        Print($"Sending batch: CurrentBar={CurrentBar}, from barsAgo={extractedBarsCount} to {extractedBarsCount + barsToSend - 1}");
 		        for (int i = 0; i < barsToSend; i++)
 		        {
-		            int barsAgo = i + extractedBarsCount;
-		            if (barsAgo >= 0 && barsAgo <= CurrentBar)
-		            {
-		                try
-		                {
-		                    string message = string.Format("HISTORICAL:{0},{1},{2},{3},{4},{5},{6},{7},{8}",
-		                        Open[barsAgo].ToString("F2"),
-		                        High[barsAgo].ToString("F2"),
-		                        Low[barsAgo].ToString("F2"),
-		                        Close[barsAgo].ToString("F2"),
-		                        emaShort[barsAgo].ToString("F2"),
-		                        emaLong[barsAgo].ToString("F2"),
-		                        atr[barsAgo].ToString("F4"),
-		                        adx[barsAgo].ToString("F2"),
-		                        Time[barsAgo].ToString("yyyy-MM-dd HH:mm:ss"));
-		                    message += "\n";
+                try
+                {
+                    // Use the common FormatBarData method to create the message
+                    string message = FormatBarData(barsAgo, true);
+                    if (message != null)
+                    {
+                        if (i % 20 == 0)
+                        {
+                            Print($"Sending bar: barsAgo={barsAgo}, time={Time[barsAgo].ToString()}");
+                        }
+                        SendDataMessage(message);
+                        sentInThisBatch++;
+                    }
 		                    if (i % 20 == 0)
 		                    {
 		                        Print($"Sending bar: barsAgo={barsAgo}, time={Time[barsAgo].ToString()}");
@@ -729,22 +726,18 @@ namespace NinjaTrader.NinjaScript.Indicators
 		    Print($"Extraction progress: {progressPercent:F1}% ({extractedBarsCount}/{totalBarsToExtract}, sent {sentInThisBatch} bars in this batch)");
 		}
         
-        private void SendBarDataForExtraction(int barIndex)
+        // This method has been removed as its functionality is now provided by
+        // FormatBarData and is used in SendHistoricalBatch
+
+        private string FormatBarData(int barsAgo, bool isHistorical = false)
         {
-            if (barIndex < 0 || barIndex >= CurrentBar)
-            {
-                Print($"Invalid bar index: {barIndex}, CurrentBar: {CurrentBar}");
-                return;
-            }
-                
+            // Format a bar's data into a string
             try
             {
-                // En NinjaTrader, debemos utilizar BarsAgo, que es la DIFERENCIA entre CurrentBar y el índice deseado
-                // Esto quita el error "barsAgo needed to be between 0 and 29999"
-                int barsAgo = CurrentBar - barIndex;
-                
-                // Prepare data message with OHLC and indicators
-                string message = string.Format("HISTORICAL:{0},{1},{2},{3},{4},{5},{6},{7},{8}",
+                // Create formatter string
+                string formatPrefix = isHistorical ? "HISTORICAL:" : "";
+                string barData = string.Format("{0}{1},{2},{3},{4},{5},{6},{7},{8},{9}",
+                    formatPrefix,
                     Open[barsAgo].ToString("F2"),
                     High[barsAgo].ToString("F2"),
                     Low[barsAgo].ToString("F2"),
@@ -756,23 +749,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                     Time[barsAgo].ToString("yyyy-MM-dd HH:mm:ss"));
                 
                 // Add newline for message separation
-                message += "\n";
-                
-                // Log occasionally for debugging (every 100 bars)
-                if (extractedBarsCount % 100 == 0)
-                {
-                    Print($"Sending historical bar data: barIndex={barIndex}, barsAgo={barsAgo}, message={message.Trim()}");
-                }
-                
-                // Send the message
-                SendDataMessage(message);
+                return barData + "\n";
             }
             catch (Exception ex)
             {
-                Print($"Error sending historical bar data for index {barIndex}: {ex.Message}");
+                Print($"Error formatting bar data for barsAgo={barsAgo}: {ex.Message}");
+                return null;
             }
         }
-
+        
         private void SendBarData(int barIndex)
         {
             if (barIndex < 0 || barIndex >= CurrentBar)
@@ -786,23 +771,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // En NinjaTrader, debemos utilizar BarsAgo, que es la DIFERENCIA entre CurrentBar y el índice deseado
                 int barsAgo = CurrentBar - barIndex;
                 
-                // Prepare data message with OHLC and indicators
-                string message = string.Format("{0},{1},{2},{3},{4},{5},{6},{7},{8}",
-                    Open[barsAgo].ToString("F2"),
-                    High[barsAgo].ToString("F2"),
-                    Low[barsAgo].ToString("F2"),
-                    Close[barsAgo].ToString("F2"),
-                    emaShort[barsAgo].ToString("F2"),
-                    emaLong[barsAgo].ToString("F2"),
-                    atr[barsAgo].ToString("F4"),
-                    adx[barsAgo].ToString("F2"),
-                    Time[barsAgo].ToString("yyyy-MM-dd HH:mm:ss"));
-                
-                // Add newline for message separation
-                message += "\n";
-                
-                // Send the message
-                SendDataMessage(message);
+                // Format and send the data
+                string message = FormatBarData(barsAgo, false);
+                if (message != null)
+                {
+                    SendDataMessage(message);
+                }
             }
             catch (Exception ex)
             {

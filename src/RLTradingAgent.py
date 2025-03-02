@@ -773,14 +773,14 @@ class NinjaTraderInterface:
         """Send a trading action to NinjaTrader"""
         try:
             # Format the order command
-            order_command = f"{signal},{ema_choice},{position_size},{stop_loss},{take_profit}"
+            order_command = f"{signal},{ema_choice},{position_size},{stop_loss},{take_profit}\n"
             
-            # Send the command (will be placed in the queue if not connected)
-            self.order_queue.put(order_command)
+            # Send the command
+            self.send_order_command(order_command)
             
-            logger.info(f"Queued trading action: {order_command}")
+            logger.info(f"Sent trading action: {order_command.strip()}")
         except Exception as e:
-            logger.error(f"Error queueing trading action: {e}")
+            logger.error(f"Error sending trading action: {e}")
             
     def send_order_command(self, command):
         """Send a command to NinjaTrader via the order connection"""
@@ -1118,22 +1118,6 @@ class NinjaTraderInterface:
             logger.error(f"Error processing market data: {e}")
             logger.error(f"Data string: {data_str}")
             
-    def send_trading_action(self, signal, ema_choice, position_size, stop_loss, take_profit):
-        """Send a trading action to NinjaTrader"""
-        try:
-            # Format the order command
-            order_command = f"{signal},{ema_choice},{position_size},{stop_loss},{take_profit}\n"
-            
-            # Send the command
-            self.send_order_command(order_command)
-            
-            logger.info(f"Sent trading action: {order_command.strip()}")
-        except Exception as e:
-            logger.error(f"Error sending trading action: {e}")
-            
     # The order_sender_loop and process_order_confirmation methods have been removed
     # since Python now acts only as a client connecting to NinjaTrader's servers
     # The send_order_command method is already implemented correctly above
-    
-            
-    # Este método fue movido arriba y mejorado, esta duplicación ya no es necesaria

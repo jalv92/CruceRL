@@ -945,236 +945,35 @@ class MainApplication(tk.Frame):
         self.worker_thread.daemon = True
         self.worker_thread.start()
     
-    def start_backtesting(self):
-        """Inicia el backtesting de un modelo"""
-        # Verificar si hay datos extraídos
-        data_dir = "data"
-        extracted_files = [f for f in os.listdir(data_dir) if f.startswith("extracted_data_") and f.endswith(".csv")]
-        
-        if not extracted_files:
-            messagebox.showerror("No Data Available", "No extracted data found. Please extract data from NinjaTrader first.")
-            self.running = False
-            return
-        
-        # Ordenar por fecha (más reciente primero)
-        extracted_files.sort(reverse=True)
-        latest_data_file = os.path.join(data_dir, extracted_files[0])
-        
-        # Obtener modelo
-        model_path = filedialog.askopenfilename(
-            title="Seleccionar modelo",
-            filetypes=[("Archivos de modelo", "*.zip"), ("Todos los archivos", "*.*")]
-        )
-        if not model_path:
-            self.running = False
-            return
-        
-        # Crear función para backtesting en un hilo separado
-        def backtesting_thread():
-            try:
-                logger.info("Iniciando backtesting...")
-                self.control_panel.start_button.configure(state='disabled')
-                self.control_panel.pause_button.configure(state='normal')
-                self.control_panel.stop_button.configure(state='normal')
-                
-                # Cargar datos
-                _, test_data = self.data_loader.prepare_train_test_data(csv_file=latest_data_file, test_ratio=1.0)
-                logger.info(f"Datos cargados: {len(test_data)} registros")
-                
-                # Cargar modelo
-                model = self.training_manager.load_model(model_path)
-                
-                # Iniciar backtesting
-                model_dir = os.path.dirname(model_path)
-                vec_normalize_path = os.path.join(model_dir, "vec_normalize_final.pkl")
-                if not os.path.exists(vec_normalize_path):
-                    vec_normalize_path = None
-                
-                # Realizar backtesting
-                performance_df = self.training_manager.backtest(model, test_data, vec_normalize_path)
-                
-                # Verificar si se detuvo manualmente
-                if not self.running:
-                    logger.info("Backtesting detenido manualmente")
-                    return
-                
-                # Mostrar resultados
-                self.training_manager.plot_backtest_results(performance_df)
-                
-                logger.info("Backtesting completado exitosamente")
-                
-                # Actualizar UI
-                self.control_panel.start_button.configure(state='normal')
-                self.control_panel.pause_button.configure(state='disabled')
-                self.control_panel.stop_button.configure(state='disabled')
-                
-                # Mensaje al usuario
-                messagebox.showinfo("Backtesting", "El backtesting ha finalizado correctamente")
-                
-                self.running = False
-                
-            except Exception as e:
-                logger.error(f"Error en backtesting: {e}")
-                messagebox.showerror("Error", f"Error durante el backtesting: {e}")
-                self.running = False
-                self.control_panel.start_button
-                self.control_panel.start_button.configure(state='normal')
-                self.control_panel.pause_button.configure(state='disabled')
-                self.control_panel.stop_button.configure(state='disabled')
-            except Exception as e:
-                logger.error(f"Error en backtesting: {e}")
-                messagebox.showerror("Error", f"Error durante el backtesting: {e}")
-                self.running = False
-                self.control_panel.start_button.configure(state='normal')
-                self.control_panel.pause_button.configure(state='disabled')
-                self.control_panel.stop_button.configure(state='disabled')
-        
-        # Iniciar en un hilo separado
-        self.worker_thread = threading.Thread(target=backtesting_thread)
-        self.worker_thread.daemon = True
-        self.worker_thread.start()
-    
-    def start_server_mode(self):
-        """Inicia el modo servidor para conectarse a NinjaTrader"""
-        if not self.connected:
-            messagebox.showwarning("No conectado", "Debe conectarse a NinjaTrader primero")
-            self.running = False
-            return
-        
-        # Preguntar si desea usar un modelo
-        use_model = messagebox.askyesno("Modelo", "¿Desea cargar un modelo de RL para trading?")
-        model_path = None
-        
-        if use_model:
-            # Seleccionar modelo
-            file_path = filedialog.askopenfilename(
-                title="Seleccionar modelo",
-                filetypes=[("Archivos de modelo", "*.zip"), ("Todos los archivos", "*.*")]
-            )
-            if file_path:
-                model_path = file_path
-        
-        # Crear función para el modo servidor en un hilo separado
-        def server_thread():
-            try:
-                logger.info("Iniciando modo servidor...")
-                self.control_panel.start_button.configure(state='disabled')
-                self.control_panel.pause_button.configure(state='normal')
-                self.control_panel.stop_button.configure(state='normal')
-                
-                # Detener el servidor actual si existe
-                import run_trading_system
-                run_trading_system.stop_server()
-                
-                # Determinar ruta de normalización
-                vec_normalize_path = None
-                if model_path:
-                    model_dir = os.path.dirname(model_path)
-                    possible_vec_norm = os.path.join(model_dir, "vec_normalize_final.pkl")
-                    if os.path.exists(possible_vec_norm):
-                        vec_normalize_path = possible_vec_norm
-                
-                # Iniciar el servidor en segundo plano con el modelo
-                run_trading_system.start_server_in_background(
-                    ip=self.control_panel.ip_var.get(),
-                    data_port=int(self.control_panel.data_port_var.get()),
-                    order_port=int(self.control_panel.data_port_var.get()) + 1,
-                    model_path=model_path,
-                    vec_normalize_path=vec_normalize_path
-                )
-                
-                # Obtener la referencia global al servidor
-                self.nt_interface = run_trading_system.nt_interface
-                
-                # Bucle principal mientras se ejecuta
-                while self.running:
-                    # Verificar pausa
-                    if self.paused:
-                        time.sleep(0.5)
-                        continue
-                    
-                    # Actualizar estadísticas si hay datos disponibles
-                    if hasattr(self.nt_interface, 'market_data') and len(self.nt_interface.market_data.data) > 0:
-                        # Actualizar gráfico de precios
-                        recent_data = self.nt_interface.market_data.data.tail(100).copy()
-                        
-                        if 'timestamp' not in recent_data.columns:
-                            recent_data['timestamp'] = pd.date_range(
-                                end=pd.Timestamp.now(), 
-                                periods=len(recent_data), 
-                                freq='1min'
-                            )
-                        
-                        price_data = []
-                        for idx, row in recent_data.iterrows():
-                            data_point = {
-                                'timestamp': row['timestamp'] if 'timestamp' in row else pd.Timestamp.now(),
-                                'open': row['open'] if 'open' in row else 0,
-                                'high': row['high'] if 'high' in row else 0,
-                                'low': row['low'] if 'low' in row else 0,
-                                'close': row['close'] if 'close' in row else 0
-                            }
-                            price_data.append(data_point)
-                        
-                        self.chart_panel.update_price_chart(price_data)
-                    
-                    # Actualizar estadísticas si hay datos del agente
-                    if hasattr(self.nt_interface, 'rl_agent'):
-                        agent = self.nt_interface.rl_agent
-                        
-                        # Actualizar panel de estadísticas
-                        stats = {
-                            'balance': 100000.0 + agent.profit_loss,
-                            'total_pnl': agent.profit_loss,
-                            'trades_count': agent.trade_count,
-                            'win_rate': agent.successful_trades / max(1, agent.trade_count),
-                            'current_position': 'Long' if agent.current_position == 1 else 
-                                               'Short' if agent.current_position == -1 else 'None'
-                        }
-                        self.stats_panel.update_stats(stats)
-                        
-                        # Actualizar gráfico de rendimiento
-                        self.chart_panel.update_performance_chart(
-                            100000.0 + agent.profit_loss, 
-                            pd.Timestamp.now()
-                        )
-                    
-                    time.sleep(1.0)
-                
-                # Detener interfaz al finalizar
-                run_trading_system.stop_server()
-                
-                logger.info("Modo servidor finalizado")
-                
-                # Actualizar UI
-                self.control_panel.start_button.configure(state='normal')
-                self.control_panel.pause_button.configure(state='disabled')
-                self.control_panel.stop_button.configure(state='disabled')
-                
-            except Exception as e:
-                logger.error(f"Error en modo servidor: {e}")
-                messagebox.showerror("Error", f"Error en modo servidor: {e}")
-                self.running = False
-                self.control_panel.start_button.configure(state='normal')
-                self.control_panel.pause_button.configure(state='disabled')
-                self.control_panel.stop_button.configure(state='disabled')
-        
-        # Iniciar en un hilo separado
-        self.worker_thread = threading.Thread(target=server_thread)
-        self.worker_thread.daemon = True
-        self.worker_thread.start()
-    
     def start_backtesting(self, csv_path=None):
         """Inicia el backtesting de un modelo"""
+        # Si no se proporciona ruta de CSV, usar los datos extraídos más recientes
         if not csv_path:
-            file_path = filedialog.askopenfilename(
-                title="Seleccionar datos para backtesting",
-                filetypes=[("Archivos CSV", "*.csv"), ("Todos los archivos", "*.*")]
-            )
-            if not file_path:
+            data_dir = "data"
+            extracted_files = [f for f in os.listdir(data_dir) if f.startswith("extracted_data_") and f.endswith(".csv")]
+            
+            if not extracted_files:
+                messagebox.showerror("No Data Available", "No extracted data found. Please extract data from NinjaTrader first.")
                 self.running = False
                 return
-            csv_path = file_path
+            
+            # Verificar si debemos pedir al usuario seleccionar un archivo CSV
+            should_select_file = len(extracted_files) > 1
+            
+            if should_select_file:
+                file_path = filedialog.askopenfilename(
+                    title="Seleccionar datos para backtesting",
+                    filetypes=[("Archivos CSV", "*.csv"), ("Todos los archivos", "*.*")],
+                    initialdir=data_dir
+                )
+                if not file_path:
+                    self.running = False
+                    return
+                csv_path = file_path
+            else:
+                # Ordenar por fecha (más reciente primero)
+                extracted_files.sort(reverse=True)
+                csv_path = os.path.join(data_dir, extracted_files[0])
         
         # Obtener modelo
         model_path = filedialog.askopenfilename(

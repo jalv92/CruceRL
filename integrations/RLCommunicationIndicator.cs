@@ -583,194 +583,151 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         // Method for extracting historical data on demand
-        public void StartHistoricalDataExtraction()
-        {
-            if (isExtractingData)
-            {
-                Print("Historical data extraction already in progress");
-                return;
-            }
-            
-            // Limitar a un número razonable (5000 barras)
-            int reasonableLimit = 5000;
-            
-            // Asegurar que no se intenten extraer más barras de las que están disponibles
-            // o más de las que podemos procesar razonablemente
-            int availableBars = Math.Min(Math.Min(CurrentBar, MaxHistoricalBars), reasonableLimit);
-            
-            if (availableBars <= 0)
-            {
-                Print("Not enough bars available for extraction");
-                return;
-            }
-            
-            // Get current instrument name
-            string instrumentName = Instrument.MasterInstrument.Name;
-            
-            // Initialize extraction variables
-            isExtractingData = true;
-            isExtractionComplete = false;
-            totalBarsToExtract = availableBars;
-            extractedBarsCount = 0;
-            
-            Print($"******* STARTING EXTRACTION *******");
-            Print($"Starting extraction of {totalBarsToExtract} historical bars for {instrumentName}...");
-            Print($"CurrentBar: {CurrentBar}, Using {availableBars} bars (limited to reasonable size)");
-            
-            // Send extraction start notification to Python
-            string startMessage = $"EXTRACTION_START:{totalBarsToExtract}:{instrumentName}\n";
-            SendDataMessage(startMessage);
-            Print($"Sent extraction start message: {startMessage.Trim()}");
-            
-            // Start the extraction process
-            // This will automatically trigger the SendHistoricalBatch method
-            // in OnBarUpdate
-            
-            // Send first batch immediately
-            this.Dispatcher.InvokeAsync(() => 
-            {
-                Print("Initiating first batch of data extraction...");
-                SendHistoricalBatch();
-                Print($"Initial batch of historical data sent. Progress: {(double)extractedBarsCount / totalBarsToExtract * 100:F1}%");
-                
-                // Programar la siguiente extracción de lote inmediatamente después
-                this.Dispatcher.InvokeAsync(() => 
-                {
-                    while (isExtractingData && !isExtractionComplete)
-                    {
-                        SendHistoricalBatch();
-                        System.Threading.Thread.Sleep(100); // Pequeña pausa para evitar sobrecargar el sistema
-                    }
-                });
-            });
-        }
+		public void StartHistoricalDataExtraction()
+		{
+		    if (isExtractingData)
+		    {
+		        Print("Historical data extraction already in progress");
+		        return;
+		    }
+		    
+		    int reasonableLimit = 5000;
+		    int availableBars = Math.Min(Math.Min(CurrentBar + 1, MaxHistoricalBars), reasonableLimit);
+		    
+		    if (availableBars <= 0)
+		    {
+		        Print("Not enough bars available for extraction");
+		        return;
+		    }
+		    
+		    string instrumentName = Instrument.MasterInstrument.Name;
+		    
+		    isExtractingData = true;
+		    isExtractionComplete = false;
+		    totalBarsToExtract = availableBars;
+		    extractedBarsCount = 0;
+		    
+		    Print($"******* STARTING EXTRACTION *******");
+		    Print($"Starting extraction of {totalBarsToExtract} historical bars for {instrumentName}...");
+		    Print($"CurrentBar: {CurrentBar}, Using {availableBars} bars (limited to reasonable size)");
+		    
+		    string startMessage = $"EXTRACTION_START:{totalBarsToExtract}:{instrumentName}\n";
+		    SendDataMessage(startMessage);
+		    Print($"Sent extraction start message: {startMessage.Trim()}");
+		    
+		    this.Dispatcher.InvokeAsync(() => 
+		    {
+		        Print("Initiating first batch of data extraction...");
+		        SendHistoricalBatch();
+		        Print($"Initial batch of historical data sent. Progress: {(double)extractedBarsCount / totalBarsToExtract * 100:F1}%");
+		        
+		        this.Dispatcher.InvokeAsync(() => 
+		        {
+		            while (isExtractingData && !isExtractionComplete)
+		            {
+		                SendHistoricalBatch();
+		                System.Threading.Thread.Sleep(100);
+		            }
+		        });
+		    });
+		}
         
         // Variable to store the date from which to filter data
         private DateTime? startFromDate = null;
         
-        private void SendHistoricalBatch()
-        {
-            // Error con "barsAgo needed to be between 0 and 29999" indica problema en cómo accedemos
-            // a los datos históricos. Arreglemos eso.
-            
-            // Send batches of 100 bars at a time to avoid overloading the connection
-            int batchSize = 100;
-            int barsToSend = Math.Min(batchSize, totalBarsToExtract - extractedBarsCount);
-            
-            if (barsToSend <= 0)
-            {
-                // Extraction complete
-                if (!isExtractionComplete)
-                {
-                    // Include instrument name in the completion message
-                    string instrumentName = Instrument.MasterInstrument.Name;
-                    string completeMessage = $"EXTRACTION_COMPLETE:{instrumentName}\n";
-                    SendDataMessage(completeMessage);
-                    
-                    isExtractionComplete = true;
-                    isExtractingData = false;
-                    Print($"Historical data extraction completed for {instrumentName}: {extractedBarsCount} bars sent");
-                    
-                    // Reset start date after completion
-                    startFromDate = null;
-                }
-                return;
-            }
-            
-            // Send a batch of historical bars
-            int sentInThisBatch = 0;
-            
-            try
-            {
-                // ENFOQUE SIMPLIFICADO: 
-                // En lugar de usar índices basados en CurrentBar, usamos directamente BarsAgo
-                // que es lo que NinjaTrader espera
-                
-                // Queremos extraer las últimas X barras, empezando por las más recientes
-                // Entonces necesitamos partir de BarsAgo=0 (la barra actual)
-                // hasta BarsAgo=totalBarsToExtract-1 (la barra más antigua que queremos)
-                
-                // Calcular el rango de BarsAgo para este lote
-                int startBarsAgo = extractedBarsCount;
-                int endBarsAgo = Math.Min(startBarsAgo + barsToSend - 1, totalBarsToExtract - 1);
-                
-                Print($"Sending batch: startBarsAgo={startBarsAgo}, endBarsAgo={endBarsAgo}");
-                
-                // Extraer y enviar cada barra en el rango
-                // FIXED: Usar recorrido de barras basado en índices directos, no en barsAgo
-                // Calculamos la posición real en el buffer en términos de índice, no de barsAgo
-                for (int i = 0; i < barsToSend; i++)
-                {
-                    // Calcular el índice real en el buffer
-                    int barIndex = extractedBarsCount + i;
-                    
-                    // Verificar que el barIndex está dentro del rango permitido
-                    if (barIndex < CurrentBar)
-                    {
-                        try
-                        {
-                            // Convertir el índice a barsAgo para acceder a los datos
-                            int barsAgoValue = CurrentBar - barIndex;
-                            
-                            // Preparar mensaje usando el valor correcto de barsAgo
-                            string message = string.Format("HISTORICAL:{0},{1},{2},{3},{4},{5},{6},{7},{8}",
-                                Open[barsAgoValue].ToString("F2"),
-                                High[barsAgoValue].ToString("F2"),
-                                Low[barsAgoValue].ToString("F2"),
-                                Close[barsAgoValue].ToString("F2"),
-                                emaShort[barsAgoValue].ToString("F2"),
-                                emaLong[barsAgoValue].ToString("F2"),
-                                atr[barsAgoValue].ToString("F4"),
-                                adx[barsAgoValue].ToString("F2"),
-                                Time[barsAgoValue].ToString("yyyy-MM-dd HH:mm:ss"));
-                            
-                            // Add newline for message separation
-                            message += "\n";
-                            
-                            // Log occasionally for debugging
-                            if (sentInThisBatch % 20 == 0)
-                            {
-                                Print($"Sending bar: barIndex={barIndex}, barsAgo={barsAgoValue}, time={Time[barsAgoValue].ToString()}");
-                            }
-                            
-                            // Send the message
-                            SendDataMessage(message);
-                            sentInThisBatch++;
-                        }
-                        catch (Exception ex)
-                        {
-                            Print($"Error sending bar {barIndex}: {ex.Message}");
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Print($"Error sending batch: {ex.Message}");
-            }
-            
-            // Update the count of extracted bars
-            extractedBarsCount += sentInThisBatch;
-            
-            // Send progress update
-            double progressPercent = totalBarsToExtract > 0 ? (double)extractedBarsCount / totalBarsToExtract * 100 : 0;
-            string progressMessage = $"EXTRACTION_PROGRESS:{extractedBarsCount}:{totalBarsToExtract}:{progressPercent:F1}\n";
-            SendDataMessage(progressMessage);
-            
-            // Verificar si hemos completado la extracción
-            if (extractedBarsCount >= totalBarsToExtract)
-            {
-                string instrumentName = Instrument.MasterInstrument.Name;
-                string completeMessage = $"EXTRACTION_COMPLETE:{instrumentName}\n";
-                SendDataMessage(completeMessage);
-                
-                isExtractionComplete = true;
-                isExtractingData = false;
-                Print($"Historical data extraction completed for {instrumentName}: {extractedBarsCount} bars sent");
-            }
-            
-            Print($"Extraction progress: {progressPercent:F1}% ({extractedBarsCount}/{totalBarsToExtract}, sent {sentInThisBatch} bars in this batch)");
-        }
+		private void SendHistoricalBatch()
+		{
+		    int batchSize = 100;
+		    int barsToSend = Math.Min(batchSize, totalBarsToExtract - extractedBarsCount);
+		    
+		    if (barsToSend <= 0)
+		    {
+		        if (!isExtractionComplete)
+		        {
+		            string instrumentName = Instrument.MasterInstrument.Name;
+		            string completeMessage = $"EXTRACTION_COMPLETE:{instrumentName}\n";
+		            SendDataMessage(completeMessage);
+		            
+		            isExtractionComplete = true;
+		            isExtractingData = false;
+		            Print($"Historical data extraction completed for {instrumentName}: {extractedBarsCount} bars sent");
+		            
+		            startFromDate = null;
+		        }
+		        return;
+		    }
+		    
+		    int sentInThisBatch = 0;
+		    
+		    try
+		    {
+		        if (CurrentBar < barsToSend - 1) // Ajustado para incluir CurrentBar
+		        {
+		            Print($"Not enough bars available. CurrentBar: {CurrentBar}, barsToSend: {barsToSend}");
+		            return;
+		        }
+		        
+		        Print($"Sending batch: CurrentBar={CurrentBar}, from barsAgo={extractedBarsCount} to {extractedBarsCount + barsToSend - 1}");
+		        for (int i = 0; i < barsToSend; i++)
+		        {
+		            int barsAgo = i + extractedBarsCount;
+		            if (barsAgo >= 0 && barsAgo <= CurrentBar)
+		            {
+		                try
+		                {
+		                    string message = string.Format("HISTORICAL:{0},{1},{2},{3},{4},{5},{6},{7},{8}",
+		                        Open[barsAgo].ToString("F2"),
+		                        High[barsAgo].ToString("F2"),
+		                        Low[barsAgo].ToString("F2"),
+		                        Close[barsAgo].ToString("F2"),
+		                        emaShort[barsAgo].ToString("F2"),
+		                        emaLong[barsAgo].ToString("F2"),
+		                        atr[barsAgo].ToString("F4"),
+		                        adx[barsAgo].ToString("F2"),
+		                        Time[barsAgo].ToString("yyyy-MM-dd HH:mm:ss"));
+		                    message += "\n";
+		                    if (i % 20 == 0)
+		                    {
+		                        Print($"Sending bar: barsAgo={barsAgo}, time={Time[barsAgo].ToString()}");
+		                    }
+		                    SendDataMessage(message);
+		                    sentInThisBatch++;
+		                }
+		                catch (Exception ex)
+		                {
+		                    Print($"Error sending bar with barsAgo={barsAgo}: {ex.Message}");
+		                }
+		            }
+		            else
+		            {
+		                Print($"Warning: skipping bar with barsAgo={barsAgo} - out of range [0, {CurrentBar}]");
+		            }
+		        }
+		    }
+		    catch (Exception ex)
+		    {
+		        Print($"Error sending batch: {ex.Message}");
+		    }
+		    
+		    extractedBarsCount += sentInThisBatch;
+		    
+		    double progressPercent = totalBarsToExtract > 0 ? (double)extractedBarsCount / totalBarsToExtract * 100 : 0;
+		    string progressMessage = $"EXTRACTION_PROGRESS:{extractedBarsCount}:{totalBarsToExtract}:{progressPercent:F1}\n";
+		    SendDataMessage(progressMessage);
+		    
+		    if (extractedBarsCount >= totalBarsToExtract)
+		    {
+		        string instrumentName = Instrument.MasterInstrument.Name;
+		        string completeMessage = $"EXTRACTION_COMPLETE:{instrumentName}\n";
+		        SendDataMessage(completeMessage);
+		        
+		        isExtractionComplete = true;
+		        isExtractingData = false;
+		        Print($"Historical data extraction completed for {instrumentName}: {extractedBarsCount} bars sent");
+		    }
+		    
+		    Print($"Extraction progress: {progressPercent:F1}% ({extractedBarsCount}/{totalBarsToExtract}, sent {sentInThisBatch} bars in this batch)");
+		}
         
         private void SendBarDataForExtraction(int barIndex)
         {
@@ -1354,3 +1311,60 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
     }
 }
+
+#region NinjaScript generated code. Neither change nor remove.
+
+namespace NinjaTrader.NinjaScript.Indicators
+{
+	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
+	{
+		private RLCommunicationIndicator[] cacheRLCommunicationIndicator;
+		public RLCommunicationIndicator RLCommunicationIndicator(string serverIP, int dataPort, int orderPort, bool waitForFullBar, int eMAShortPeriod, int eMALongPeriod, int aTRPeriod, int aDXPeriod, int maxHistoricalBars, int connectionTimeout)
+		{
+			return RLCommunicationIndicator(Input, serverIP, dataPort, orderPort, waitForFullBar, eMAShortPeriod, eMALongPeriod, aTRPeriod, aDXPeriod, maxHistoricalBars, connectionTimeout);
+		}
+
+		public RLCommunicationIndicator RLCommunicationIndicator(ISeries<double> input, string serverIP, int dataPort, int orderPort, bool waitForFullBar, int eMAShortPeriod, int eMALongPeriod, int aTRPeriod, int aDXPeriod, int maxHistoricalBars, int connectionTimeout)
+		{
+			if (cacheRLCommunicationIndicator != null)
+				for (int idx = 0; idx < cacheRLCommunicationIndicator.Length; idx++)
+					if (cacheRLCommunicationIndicator[idx] != null && cacheRLCommunicationIndicator[idx].ServerIP == serverIP && cacheRLCommunicationIndicator[idx].DataPort == dataPort && cacheRLCommunicationIndicator[idx].OrderPort == orderPort && cacheRLCommunicationIndicator[idx].WaitForFullBar == waitForFullBar && cacheRLCommunicationIndicator[idx].EMAShortPeriod == eMAShortPeriod && cacheRLCommunicationIndicator[idx].EMALongPeriod == eMALongPeriod && cacheRLCommunicationIndicator[idx].ATRPeriod == aTRPeriod && cacheRLCommunicationIndicator[idx].ADXPeriod == aDXPeriod && cacheRLCommunicationIndicator[idx].MaxHistoricalBars == maxHistoricalBars && cacheRLCommunicationIndicator[idx].ConnectionTimeout == connectionTimeout && cacheRLCommunicationIndicator[idx].EqualsInput(input))
+						return cacheRLCommunicationIndicator[idx];
+			return CacheIndicator<RLCommunicationIndicator>(new RLCommunicationIndicator(){ ServerIP = serverIP, DataPort = dataPort, OrderPort = orderPort, WaitForFullBar = waitForFullBar, EMAShortPeriod = eMAShortPeriod, EMALongPeriod = eMALongPeriod, ATRPeriod = aTRPeriod, ADXPeriod = aDXPeriod, MaxHistoricalBars = maxHistoricalBars, ConnectionTimeout = connectionTimeout }, input, ref cacheRLCommunicationIndicator);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
+{
+	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
+	{
+		public Indicators.RLCommunicationIndicator RLCommunicationIndicator(string serverIP, int dataPort, int orderPort, bool waitForFullBar, int eMAShortPeriod, int eMALongPeriod, int aTRPeriod, int aDXPeriod, int maxHistoricalBars, int connectionTimeout)
+		{
+			return indicator.RLCommunicationIndicator(Input, serverIP, dataPort, orderPort, waitForFullBar, eMAShortPeriod, eMALongPeriod, aTRPeriod, aDXPeriod, maxHistoricalBars, connectionTimeout);
+		}
+
+		public Indicators.RLCommunicationIndicator RLCommunicationIndicator(ISeries<double> input , string serverIP, int dataPort, int orderPort, bool waitForFullBar, int eMAShortPeriod, int eMALongPeriod, int aTRPeriod, int aDXPeriod, int maxHistoricalBars, int connectionTimeout)
+		{
+			return indicator.RLCommunicationIndicator(input, serverIP, dataPort, orderPort, waitForFullBar, eMAShortPeriod, eMALongPeriod, aTRPeriod, aDXPeriod, maxHistoricalBars, connectionTimeout);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.Strategies
+{
+	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
+	{
+		public Indicators.RLCommunicationIndicator RLCommunicationIndicator(string serverIP, int dataPort, int orderPort, bool waitForFullBar, int eMAShortPeriod, int eMALongPeriod, int aTRPeriod, int aDXPeriod, int maxHistoricalBars, int connectionTimeout)
+		{
+			return indicator.RLCommunicationIndicator(Input, serverIP, dataPort, orderPort, waitForFullBar, eMAShortPeriod, eMALongPeriod, aTRPeriod, aDXPeriod, maxHistoricalBars, connectionTimeout);
+		}
+
+		public Indicators.RLCommunicationIndicator RLCommunicationIndicator(ISeries<double> input , string serverIP, int dataPort, int orderPort, bool waitForFullBar, int eMAShortPeriod, int eMALongPeriod, int aTRPeriod, int aDXPeriod, int maxHistoricalBars, int connectionTimeout)
+		{
+			return indicator.RLCommunicationIndicator(input, serverIP, dataPort, orderPort, waitForFullBar, eMAShortPeriod, eMALongPeriod, aTRPeriod, aDXPeriod, maxHistoricalBars, connectionTimeout);
+		}
+	}
+}
+
+#endregion

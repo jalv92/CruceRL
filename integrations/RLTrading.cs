@@ -244,34 +244,48 @@ namespace NinjaTrader.NinjaScript.Strategies
             
             try
             {
-                // Check if connection exists and is valid
+                // Verificar si ya tenemos una conexión activa
                 if (dataSender != null && dataSender.Connected && dataSenderStream != null && dataSenderStream.CanWrite)
                 {
                     isConnecting = false;
                     
-                    // Try to check connection by sending a ping message
+                    // Enviar PONG para verificar la conexión
                     try
                     {
                         byte[] pingData = Encoding.ASCII.GetBytes("PONG\n");
                         dataSenderStream.Write(pingData, 0, pingData.Length);
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // Connection might be stale, close it
+                        Print($"Error checking connection: {ex.Message}");
+                        // Conexión está caída, cerrarla
                         CloseDataSender();
-                        // Will attempt reconnection on next call
                     }
                     
                     return;
                 }
                 
-                // Close existing connection if any
+                // Cerrar cualquier conexión existente
                 CloseDataSender();
                 
-                // Create new connection
+                // Crear un TcpClient primero - NinjaTrader actúa como cliente, conectándose a Python
+                // Python estará actuando como servidor en este puerto
+                Print($"Intentando conectar a Python en {serverIP}:{dataPort}...");
+                
+                // Esperar 3 segundos para dar tiempo a Python a iniciar su servidor
+                Thread.Sleep(3000);
+                
+                // Crear nueva conexión
                 dataSender = new TcpClient();
                 
-                // Set connection timeout
+                // Configurar socket antes de la conexión
+                dataSender.NoDelay = true;
+                dataSender.SendBufferSize = 65536;
+                dataSender.ReceiveBufferSize = 65536;
+                dataSender.ReceiveTimeout = 5000;
+                dataSender.SendTimeout = 5000;
+                
+                // Intentar conexión con timeout
                 IAsyncResult result = dataSender.BeginConnect(serverIP, dataPort, null, null);
                 bool success = result.AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(ConnectionTimeout));
                 
@@ -280,10 +294,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                     dataSender.Close();
                     dataSender = null;
                     
-                    // Only log connection error once to prevent spam
+                    // Registrar el error de conexión
                     if (!connectionErrorLogged)
                     {
-                        Print("Failed to connect to Python server: Connection timeout");
+                        Print("Error connecting to Python server: Connection timeout");
                         connectionErrorLogged = true;
                     }
                     
@@ -291,39 +305,48 @@ namespace NinjaTrader.NinjaScript.Strategies
                     return;
                 }
                 
+                // Completar la conexión
                 dataSender.EndConnect(result);
                 
-                // Wait a bit to ensure connection is established
-                Thread.Sleep(500);
+                // Breve espera para asegurar que la conexión esté lista
+                Thread.Sleep(200);
                 
-                // Try to read Python response to verify the process is running
-                dataSender.ReceiveTimeout = 2000; // 2 second timeout
-                dataSender.SendTimeout = 2000;
-                
-                // Send initial handshake
+                // Obtener el stream
                 dataSenderStream = dataSender.GetStream();
+                
+                // Enviar handshake inicial
                 byte[] handshake = Encoding.ASCII.GetBytes("PONG\n");
-                dataSenderStream.Write(handshake, 0, handshake.Length);
                 
-                // Connection successful, reset error flag
+                try
+                {
+                    dataSenderStream.Write(handshake, 0, handshake.Length);
+                    Print("Handshake enviado a Python");
+                }
+                catch (Exception ex)
+                {
+                    Print($"Error al enviar handshake: {ex.Message}");
+                    CloseDataSender();
+                    isConnecting = false;
+                    return;
+                }
+                
+                // Conexión exitosa, resetear flag de error
                 connectionErrorLogged = false;
-                
-                // Configure socket
-                dataSender.NoDelay = true;
-                dataSender.SendBufferSize = 65536;
-                dataSender.ReceiveBufferSize = 65536;
-                
                 Print("Connected to Python server at " + serverIP + ":" + dataPort);
                 
-                // Iniciando limpieza de conexión...
-                Print("Iniciando limpieza de conexión...");
-                
-                // Send any buffered data
+                // Enviar datos acumulados
                 while (dataBuffer.Count > 0)
                 {
-                    string data = dataBuffer.Dequeue();
-                    byte[] buffer = Encoding.ASCII.GetBytes(data);
-                    dataSenderStream.Write(buffer, 0, buffer.Length);
+                    try
+                    {
+                        string data = dataBuffer.Dequeue();
+                        byte[] buffer = Encoding.ASCII.GetBytes(data);
+                        dataSenderStream.Write(buffer, 0, buffer.Length);
+                    }
+                    catch (Exception ex)
+                    {
+                        Print($"Error sending buffered data: {ex.Message}");
+                    }
                 }
             }
             catch (Exception ex)
@@ -334,36 +357,79 @@ namespace NinjaTrader.NinjaScript.Strategies
                     connectionErrorLogged = true;
                 }
                 
-                dataSender = null;
-                dataSenderStream = null;
+                // Asegurar limpieza si falló la conexión
+                if (dataSenderStream != null)
+                {
+                    try { dataSenderStream.Close(); } catch { }
+                    dataSenderStream = null;
+                }
+                
+                if (dataSender != null)
+                {
+                    try { dataSender.Close(); } catch { }
+                    dataSender = null;
+                }
             }
-            
-            isConnecting = false;
+            finally
+            {
+                isConnecting = false;
+            }
         }
 
         private void CloseDataSender()
         {
             try
             {
+                // Cerrar primero el stream
                 if (dataSenderStream != null)
                 {
-                    dataSenderStream.Close();
-                    dataSenderStream = null;
+                    try 
+                    {
+                        dataSenderStream.Flush();
+                        dataSenderStream.Close();
+                    }
+                    catch (Exception streamEx)
+                    {
+                        Print("Error closing data stream: " + streamEx.Message);
+                    }
+                    finally
+                    {
+                        dataSenderStream = null;
+                    }
                 }
                 
+                // Luego cerrar el cliente TCP
                 if (dataSender != null)
                 {
-                    dataSender.Close();
-                    dataSender = null;
+                    try
+                    {
+                        dataSender.Close();
+                    }
+                    catch (Exception tcpEx)
+                    {
+                        Print("Error closing TCP client: " + tcpEx.Message);
+                    }
+                    finally
+                    {
+                        dataSender = null;
+                    }
                 }
+                
+                Print("Data sender closed successfully");
             }
             catch (Exception ex)
             {
                 Print("Error closing data sender connection: " + ex.Message);
             }
+            finally
+            {
+                // Forzar limpieza de recursos
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
         }
 
-        // New method for extracting historical data on demand
+        // Method for extracting historical data on demand
         private void StartHistoricalDataExtraction()
         {
             if (isExtractingData)
@@ -563,36 +629,68 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             try
             {
+                // Set the flag to stop the thread
                 isOrderReceiverRunning = false;
                 
+                // Properly terminate the thread
                 if (orderReceiverThread != null && orderReceiverThread.IsAlive)
                 {
-                    orderReceiverThread.Join(1000); // Wait up to 1 second for thread to finish
-                    
-                    if (orderReceiverThread.IsAlive)
+                    try
                     {
-                        // Force abort if still running
-                        orderReceiverThread.Abort();
+                        // Give it some time to finish gracefully
+                        orderReceiverThread.Join(2000); // Wait up to 2 seconds for thread to finish
+                        
+                        if (orderReceiverThread.IsAlive)
+                        {
+                            // Only abort if necessary - this is a last resort
+                            // as Thread.Abort() can lead to resource leaks
+                            orderReceiverThread.Abort();
+                            
+                            // Wait a bit for the abort to take effect
+                            Thread.Sleep(300);
+                        }
+                    }
+                    catch (Exception threadEx)
+                    {
+                        Print("Error shutting down order receiver thread: " + threadEx.Message);
                     }
                     
                     orderReceiverThread = null;
                 }
                 
+                // Close the network stream
                 if (orderReceiverStream != null)
                 {
-                    orderReceiverStream.Close();
+                    try
+                    {
+                        orderReceiverStream.Close();
+                    }
+                    catch { }
                     orderReceiverStream = null;
                 }
                 
+                // Stop the TCP listener
                 if (orderReceiver != null)
                 {
-                    orderReceiver.Stop();
+                    try
+                    {
+                        orderReceiver.Stop();
+                    }
+                    catch { }
                     orderReceiver = null;
                 }
+                
+                Print("Order receiver closed successfully");
             }
             catch (Exception ex)
             {
                 Print("Error closing order receiver: " + ex.Message);
+            }
+            finally
+            {
+                // Force garbage collection to clean up resources
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
             }
         }
 
@@ -697,6 +795,24 @@ namespace NinjaTrader.NinjaScript.Strategies
                 
                 Print("Received order message: " + message);
                 
+                // PING/HEARTBEAT handling para mantener la conexión activa
+                if (message.Equals("PING", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Responder con PONG para confirmar conexión 
+                    try {
+                        SendDataMessage("PONG\n");
+                    } catch (Exception ex) {
+                        Print("Error sending PONG response: " + ex.Message);
+                    }
+                    return;
+                }
+                
+                if (message.Equals("HEARTBEAT", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Solo para mantener la conexión activa, no es necesaria respuesta
+                    return;
+                }
+                
                 // Check for special command messages
                 if (message.StartsWith(extractionCommand))
                 {
@@ -710,6 +826,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (parts.Length < 5)
                 {
                     Print("Invalid order message format. Expected at least 5 parameters.");
+                    // Enviar respuesta de error al cliente
+                    SendDataMessage("ERROR:Invalid_Format\n");
                     return;
                 }
                 
@@ -727,6 +845,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     !double.TryParse(parts[4], out takeProfit))
                 {
                     Print("Invalid order message data. Could not parse values.");
+                    SendDataMessage("ERROR:Invalid_Values\n");
                     return;
                 }
                 
@@ -734,18 +853,21 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (tradeSignal < -1 || tradeSignal > 1)
                 {
                     Print("Invalid trade signal: " + tradeSignal);
+                    SendDataMessage("ERROR:Invalid_Signal\n");
                     return;
                 }
                 
                 if (emaChoice < 0 || emaChoice > 2)
                 {
                     Print("Invalid EMA choice: " + emaChoice);
+                    SendDataMessage("ERROR:Invalid_EMA\n");
                     return;
                 }
                 
                 if (positionSize <= 0 || positionSize > 10)
                 {
                     Print("Invalid position size: " + positionSize);
+                    SendDataMessage("ERROR:Invalid_Size\n");
                     return;
                 }
                 
@@ -758,14 +880,16 @@ namespace NinjaTrader.NinjaScript.Strategies
                 
                 // Execute the trading decision on the main thread
                 this.Dispatcher.InvokeAsync(() => ExecuteTradingDecision());
+                
+                // Confirmar que se procesó correctamente el mensaje
+                SendDataMessage($"ORDER_CONFIRMED:{tradeSignal},{emaChoice},{positionSize}\n");
             }
             catch (Exception ex)
             {
                 Print("Error processing order message: " + ex.Message);
+                SendDataMessage("ERROR:Processing_Error\n");
             }
         }
-
-        // Rest of the class implementation remains the same...
 
         private void ExecuteTradingDecision()
         {

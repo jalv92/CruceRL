@@ -249,6 +249,7 @@ class NinjaTraderInterface:
         self.order_sender_running = False
         self.data_receiver_thread = None
         self.order_sender_thread = None
+        self.data_receiver_socket = None
         self.order_sender_socket = None
         self.connection_status = False  # Track connection status
         self.last_heartbeat_time = time.time()
@@ -286,25 +287,11 @@ class NinjaTraderInterface:
             logger.warning("Connection timeout - no heartbeat received")
             return False
         
-        # Intentar probar la conexión directamente con un socket
-        try:
-            # Crear socket de prueba
-            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            test_socket.settimeout(1)  # Timeout de 1 segundo
-            result = test_socket.connect_ex((self.server_ip, self.data_port))
-            test_socket.close()
+        # Conexiones activas = conectado
+        if (self.data_receiver_socket and self.order_sender_socket):
+            return True
             
-            # Si result es 0, la conexión fue exitosa
-            if result == 0:
-                return True
-            else:
-                logger.warning(f"Connection test failed with code {result}")
-                return False
-        except Exception as e:
-            logger.warning(f"Connection test error: {e}")
-            return False
-            
-        return True
+        return False
     
     def set_auto_trading(self, enabled: bool):
         """Enable or disable auto trading"""
@@ -315,10 +302,7 @@ class NinjaTraderInterface:
     def start(self):
         """Start the interface"""
         try:
-            # NinjaTrader actúa como servidor en los puertos data_port (para enviar datos) y
-            # order_port (para recibir órdenes). En esta implementación, Python es el cliente.
-            
-            # Primero, inicializar los hilos que manejarán la comunicación
+            # Inicializar los hilos de comunicación
             self.data_receiver_running = True
             self.data_receiver_thread = threading.Thread(target=self.data_receiver_loop)
             self.data_receiver_thread.daemon = True
@@ -329,8 +313,7 @@ class NinjaTraderInterface:
             self.order_sender_thread.daemon = True
             self.order_sender_thread.start()
             
-            # Actualizar el estado de conexión - la conexión real la establecerá
-            # el data_receiver_loop y el order_sender_loop
+            # Actualizar el estado de conexión
             self.last_heartbeat_time = time.time()
             logger.info("NinjaTrader interface started")
             return True
@@ -345,17 +328,28 @@ class NinjaTraderInterface:
         self.data_receiver_running = False
         self.order_sender_running = False
         
+        # Cerrar data socket
+        if self.data_receiver_socket:
+            try:
+                self.data_receiver_socket.close()
+                self.data_receiver_socket = None
+            except:
+                pass
+                
+        # Cerrar order socket
+        if self.order_sender_socket:
+            try:
+                self.order_sender_socket.close()
+                self.order_sender_socket = None
+            except:
+                pass
+                
+        # Esperar a que terminen los hilos
         if self.data_receiver_thread and self.data_receiver_thread.is_alive():
             self.data_receiver_thread.join(timeout=2.0)
         
         if self.order_sender_thread and self.order_sender_thread.is_alive():
             self.order_sender_thread.join(timeout=2.0)
-        
-        if self.order_sender_socket:
-            try:
-                self.order_sender_socket.close()
-            except:
-                pass
         
         logger.info("NinjaTrader interface stopped")
 
@@ -376,106 +370,122 @@ class NinjaTraderInterface:
         """Loop to receive market data from NinjaTrader"""
         logger.info(f"Starting data receiver to connect to NinjaTrader at {self.server_ip}:{self.data_port}")
         
-        # En esta implementación, Python es el CLIENTE que se conecta al puerto data_port de NinjaTrader
-        # NinjaTrader actúa como SERVIDOR en ese puerto
+        # En esta implementación, Python actúa como SERVIDOR en el puerto data_port
+        # NinjaTrader se conectará a este puerto
         
-        reconnect_delay = 5  # segundos entre intentos de reconexión
-        last_attempt = time.time() - reconnect_delay  # para intentar la conexión inmediatamente
+        # Crear socket servidor
+        server_socket = None
+        client_socket = None
         
-        while self.data_receiver_running:
-            # Verificar tiempo entre reconexiones
-            if time.time() - last_attempt < reconnect_delay:
-                time.sleep(0.5)
-                continue
-                
-            # Marcar tiempo de intento
-            last_attempt = time.time()
-                
-            client_socket = None
-            try:
-                # Crear un nuevo socket para conectar con NinjaTrader
-                client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                client_socket.settimeout(3.0)  # 3 segundos de timeout para conectar
-                
-                # Conectar al servidor de datos de NinjaTrader
-                logger.info(f"Attempting to connect to NinjaTrader at {self.server_ip}:{self.data_port}...")
-                client_socket.connect((self.server_ip, self.data_port))
-                
-                # Ajustar timeout para recepción de datos
-                client_socket.settimeout(1.0)
-                
-                # Conexión establecida
-                logger.info(f"Data connection established to NinjaTrader at {self.server_ip}:{self.data_port}")
-                self.connection_status = True
-                self.last_heartbeat_time = time.time()
-                
-                # Procesar datos recibidos
-                buffer = ""
-                
-                while self.data_receiver_running:
-                    try:
-                        # Recibir datos
-                        data = client_socket.recv(4096)
-                        if not data:
-                            # Conexión cerrada
-                            logger.warning("NinjaTrader connection closed")
-                            break
-                            
-                        # Actualizar el tiempo del último heartbeat
-                        self.last_heartbeat_time = time.time()
-                        
-                        # Procesar datos recibidos
-                        buffer += data.decode('ascii')
-                        
-                        # Procesar líneas completas
-                        lines = buffer.split('\n')
-                        buffer = lines[-1]  # Mantener lo que queda después del último newline
-                        
-                        for line in lines[:-1]:  # Procesar líneas completas
-                            if line.strip():  # Ignorar líneas vacías
-                                self.process_data_message(line)
+        try:
+            # Configurar el socket servidor
+            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server_socket.bind((self.server_ip, self.data_port))
+            server_socket.listen(1)  # Solo aceptar una conexión
+            server_socket.settimeout(1.0)  # Timeout para aceptar conexiones
+            
+            logger.info(f"Data receiver listening on {self.server_ip}:{self.data_port}")
+            
+            reconnect_attempts = 0
+            max_reconnect_attempts = 30  # Mayor tiempo de espera
+            
+            # Bucle principal para aceptar conexiones
+            while self.data_receiver_running and reconnect_attempts < max_reconnect_attempts:
+                try:
+                    # Esperar a que se conecte NinjaTrader
+                    client_socket, addr = server_socket.accept()
+                    client_socket.settimeout(1.0)  # Timeout para recepción de datos
                     
-                    except socket.timeout:
-                        # Timeout en recv - normal, seguir intentando
-                        continue
-                    except Exception as e:
-                        # Error en la conexión
-                        logger.error(f"Data receiver error: {e}")
-                        break
+                    self.data_receiver_socket = client_socket
+                    logger.info(f"Client connected to data receiver from {addr}")
+                    self.connection_status = True
+                    self.last_heartbeat_time = time.time()
+                    reconnect_attempts = 0  # Resetear intentos
+                    
+                    # Procesar datos recibidos
+                    buffer = ""
+                    
+                    # Bucle para recibir datos
+                    while self.data_receiver_running:
+                        try:
+                            # Recibir datos
+                            data = client_socket.recv(4096)
+                            if not data:
+                                # Conexión cerrada
+                                logger.warning("Client disconnected from data receiver")
+                                break
+                                
+                            # Actualizar el tiempo del último heartbeat
+                            self.last_heartbeat_time = time.time()
+                            
+                            # Procesar datos recibidos
+                            buffer += data.decode('ascii', errors='replace')
+                            
+                            # Procesar líneas completas
+                            lines = buffer.split('\n')
+                            buffer = lines[-1]  # Mantener lo que queda después del último newline
+                            
+                            for line in lines[:-1]:  # Procesar líneas completas
+                                if line.strip():  # Ignorar líneas vacías
+                                    self.process_data_message(line)
+                        
+                        except socket.timeout:
+                            # Timeout en recv - verificar tiempo del último heartbeat
+                            if time.time() - self.last_heartbeat_time > self.connection_timeout:
+                                logger.warning(f"Data receiver heartbeat timeout ({self.connection_timeout}s)")
+                                break
+                            continue
+                        except socket.error as e:
+                            logger.error(f"Data receiver socket error: {e}")
+                            break
+                        except Exception as e:
+                            logger.error(f"Data receiver error: {e}")
+                            break
+                    
+                    # Cerrar socket del cliente
+                    if client_socket:
+                        try:
+                            client_socket.close()
+                        except:
+                            pass
+                        
+                        self.data_receiver_socket = None
+                    
+                    # Marcar como desconectado
+                    self.connection_status = False
+                    
+                except socket.timeout:
+                    # Timeout al aceptar conexiones (normal)
+                    reconnect_attempts += 1
+                    if reconnect_attempts % 5 == 0:  # Log cada 5 intentos
+                        logger.info(f"Waiting for NinjaTrader to connect to data port... ({reconnect_attempts}/{max_reconnect_attempts})")
+                    continue
+                except Exception as e:
+                    logger.error(f"Data receiver accept error: {e}")
+                    reconnect_attempts += 1
+                    time.sleep(1.0)
+            
+            if reconnect_attempts >= max_reconnect_attempts:
+                logger.error("No se pudo establecer conexión con NinjaTrader")
                 
-                # Cerrar socket si hay algún problema
-                if client_socket:
-                    try:
-                        client_socket.close()
-                    except:
-                        pass
-                
-                # Marcar como desconectado
-                self.connection_status = False
-                logger.warning("Data receiver disconnected, will attempt to reconnect")
-                
-            except socket.timeout:
-                # Timeout al conectar
-                logger.warning(f"Connection timeout to NinjaTrader at {self.server_ip}:{self.data_port}")
-                self.connection_status = False
-            except ConnectionRefusedError:
-                # Conexión rechazada
-                logger.warning(f"Connection refused by NinjaTrader at {self.server_ip}:{self.data_port}")
-                self.connection_status = False
-            except Exception as e:
-                # Otro error
-                logger.error(f"Data receiver error: {e}")
-                self.connection_status = False
-                
-            # Cerrar socket si ocurrió un error antes de la conexión
+        except Exception as e:
+            logger.error(f"Data receiver initialization error: {e}")
+        finally:
+            # Cerrar socket servidor
+            if server_socket:
+                try:
+                    server_socket.close()
+                except:
+                    pass
+            
             if client_socket:
                 try:
                     client_socket.close()
                 except:
                     pass
-                    
-            # Esperar antes de intentar reconectar
-            time.sleep(1.0)
+                
+            self.data_receiver_socket = None
         
         logger.info("Data receiver stopped")
     
@@ -485,6 +495,9 @@ class NinjaTraderInterface:
             # Check for special message types
             if message.startswith("PONG"):
                 # Heartbeat response
+                logger.debug("Received PONG heartbeat")
+                self.last_heartbeat_time = time.time()
+                self.connection_status = True
                 return
                 
             if message.startswith("EXTRACTION_"):
@@ -564,6 +577,7 @@ class NinjaTraderInterface:
                     
                     # Update profit/loss tracking
                     self.rl_agent.update_profit_loss(trade_data)
+                    logger.info(f"Trade executed: {trade_data['action']}, P&L: {trade_data['pnl']}")
                 return
             
             # Default: process as market data
@@ -571,6 +585,7 @@ class NinjaTraderInterface:
                 
         except Exception as e:
             logger.error(f"Error processing data message: {e}")
+            logger.error(f"Message content: {message}")
     
     def process_market_data(self, data_str, is_historical=False):
         """Process market data received from NinjaTrader"""
@@ -626,7 +641,10 @@ class NinjaTraderInterface:
             
     def order_sender_loop(self):
         """Loop to send orders to NinjaTrader"""
-        reconnect_delay = 5  # segundos entre intentos de reconexión
+        # En esta implementación, Python actúa como CLIENTE en el puerto order_port
+        # NinjaTrader actúa como SERVIDOR en ese puerto
+        
+        reconnect_delay = 3  # segundos entre intentos de reconexión
         last_attempt = time.time() - reconnect_delay  # para intentar la conexión inmediatamente
         
         while self.order_sender_running:
@@ -652,23 +670,50 @@ class NinjaTraderInterface:
                 
                 logger.info(f"Order sender connected to {self.server_ip}:{self.order_port}")
                 
+                # La conexión fue exitosa, actualizar estado de conexión
+                self.connection_status = True
+                self.last_heartbeat_time = time.time()
+                
                 # Enviar ping inicial para verificar conexión
-                self.order_sender_socket.sendall(b"PING\n")
+                time.sleep(0.5)  # Pequeña pausa para asegurar que la conexión esté estable
+                self.send_order_command("PING\n")
                 
                 # Mantener conexión activa
+                heartbeat_interval = 2.0  # Reducido a 2 segundos para detectar problemas más rápido
+                last_heartbeat = time.time()
+                
                 while self.order_sender_running:
                     try:
-                        # Enviar heartbeat periódicamente
-                        self.order_sender_socket.sendall(b"HEARTBEAT\n")
-                        time.sleep(5.0)  # Esperar 5 segundos
-                    except:
-                        logger.warning("Order sender connection lost")
+                        # Verificar si es momento de enviar heartbeat
+                        if time.time() - last_heartbeat >= heartbeat_interval:
+                            # Enviar heartbeat 
+                            self.send_order_command("HEARTBEAT\n")
+                            last_heartbeat = time.time()
+                        
+                        # Pequeña pausa para no saturar CPU
+                        time.sleep(0.1)
+                        
+                        # Verificar si la conexión ha estado demasiado tiempo sin actividad
+                        if time.time() - self.last_heartbeat_time > self.connection_timeout:
+                            logger.warning("Order sender heartbeat timeout")
+                            break
+                            
+                    except socket.error as e:
+                        logger.warning(f"Order sender socket error: {e}")
+                        break
+                    except Exception as e:
+                        logger.warning(f"Order sender connection error: {e}")
                         break
                         
             except ConnectionRefusedError:
                 logger.warning(f"Order port connection refused at {self.server_ip}:{self.order_port}")
+                self.connection_status = False
+            except socket.timeout:
+                logger.warning(f"Order sender connection timeout at {self.server_ip}:{self.order_port}")
+                self.connection_status = False
             except Exception as e:
                 logger.error(f"Order sender error: {e}")
+                self.connection_status = False
             finally:
                 # Cerrar el socket si está abierto
                 if self.order_sender_socket:
@@ -690,9 +735,26 @@ class NinjaTraderInterface:
                 logger.warning("No order connection available")
                 return False
                 
+            # Asegurar que el comando termina con newline
+            if not command.endswith('\n'):
+                command += '\n'
+                
             # Enviar comando
             self.order_sender_socket.sendall(command.encode('ascii'))
+            
+            # Actualizar tiempo del último heartbeat enviado
+            self.last_heartbeat_time = time.time()
+            
+            # Log detallado para comandos no triviales
+            if not command.startswith("HEARTBEAT") and not command.startswith("PING"):
+                logger.debug(f"Sent command: {command.strip()}")
+                
             return True
+        except socket.error as e:
+            logger.error(f"Socket error sending order command: {e}")
+            # Marcar la conexión como perdida
+            self.connection_status = False
+            return False
         except Exception as e:
             logger.error(f"Error sending order command: {e}")
             return False

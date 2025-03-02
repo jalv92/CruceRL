@@ -1,4 +1,4 @@
-#\!/usr/bin/env python
+#!/usr/bin/env python
 import os
 import sys
 import time
@@ -24,6 +24,7 @@ logger = logging.getLogger("TradingSystem")
 
 # Variable global para el servidor
 nt_interface = None
+gui_mode = False  # Flag para indicar si estamos en modo GUI
 
 def start_server_in_background(ip='127.0.0.1', data_port=5000, order_port=5001, model_path=None, vec_normalize_path=None):
     """Inicia los servidores para comunicación con NinjaTrader en segundo plano"""
@@ -35,7 +36,18 @@ def start_server_in_background(ip='127.0.0.1', data_port=5000, order_port=5001, 
     
     global nt_interface
     
+    # Detener interfaz existente si hay alguna
+    if nt_interface:
+        nt_interface.stop()
+        nt_interface = None
+    
     # Inicializar la interfaz de NinjaTrader
+    import time
+    
+    # Pequeño retraso para asegurarse de que cualquier proceso anterior haya liberado los puertos
+    logger.info(f"Esperando 2 segundos para asegurar puertos libres...")
+    time.sleep(2)
+    
     nt_interface = NinjaTraderInterface(
         server_ip=ip,
         data_port=data_port,
@@ -69,12 +81,17 @@ def stop_server():
         return True
     return False
 
-# Verificar si se pasan argumentos
-if len(sys.argv) > 1:
+# Verificar si se ejecuta como script principal o se importa como módulo
+if __name__ == "__main__":
     # Si hay argumentos, usar main.py para modo comando
-    from src.main import main
-    sys.exit(main())
+    if len(sys.argv) > 1:
+        from src.main import main
+        sys.exit(main())
+    else:
+        # Si no hay argumentos, iniciar la GUI completa
+        gui_mode = True
+        from src.MainGUI import main
+        main()
 else:
-    # Si no hay argumentos, iniciar la GUI completa
-    from src.MainGUI import main
-    main()
+    # Si se importa como módulo, no iniciar automáticamente la GUI
+    logger.info("Módulo run_trading_system importado")

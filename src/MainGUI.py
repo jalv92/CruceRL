@@ -419,7 +419,11 @@ class MainApplication(tk.Frame):
         cancel_button.pack(pady=(5, 0))
         
         # Callback para actualizar progreso
-        def update_extraction_progress(current, total, percent, filename=None):
+        def update_extraction_progress(current, total, percent=None, filename=None, instrument_name=None):
+            # Asegurar que percent se calcule si no se proporciona
+            if percent is None and total > 0:
+                percent = (current / total) * 100.0
+                
             if filename:
                 # Extracción completa
                 progress_var.set(100.0)
@@ -448,6 +452,7 @@ class MainApplication(tk.Frame):
                 # Actualizar progreso
                 progress_var.set(percent)
                 progress_text.set(f"{percent:.1f}% ({current}/{total})")
+                logger.info(f"Progreso de extracción: {percent:.1f}% ({current}/{total})")
         
         # Actualizar UI
         progress_window.update()
@@ -457,13 +462,24 @@ class MainApplication(tk.Frame):
             try:
                 self.nt_interface.request_historical_data(callback=update_extraction_progress)
                 
+                # Esperar a que inicie la extracción (puede tomar un momento)
+                wait_time = 0
+                max_wait = 5  # 5 segundos máximo de espera
+                while not self.nt_interface.is_extracting_data and wait_time < max_wait:
+                    time.sleep(0.5)
+                    wait_time += 0.5
+                
                 # Esperar a que se complete la extracción
-                while not self.nt_interface.extraction_complete and not self.nt_interface.is_extracting_data:
-                    time.sleep(0.1)
+                # Usamos un timeout para evitar quedarnos atascados indefinidamente
+                timeout = time.time() + 300  # 5 minutos de timeout máximo
+                while self.nt_interface.is_extracting_data and time.time() < timeout:
+                    time.sleep(0.5)
                     
-                # Esperar a que se complete la extracción
-                while self.nt_interface.is_extracting_data:
-                    time.sleep(0.1)
+                # Si alcanzamos el timeout, cancelamos la extracción
+                if self.nt_interface.is_extracting_data and time.time() >= timeout:
+                    logger.error("Timeout alcanzado esperando la extracción de datos")
+                    self.nt_interface.is_extracting_data = False
+                    self.nt_interface.cancel_extraction()
                 
                 # Si la ventana fue cerrada, asegurarse de que no intentemos actualizar
                 if not progress_window.winfo_exists():
@@ -530,12 +546,15 @@ class MainApplication(tk.Frame):
             
             logger.info(f"Conectando a NinjaTrader en {ip}:{port}...")
             
-            # Importar las funciones del archivo principal para manejar el servidor
+            # Importar las funciones del archivo run_trading_system
             import run_trading_system
             
-            # Iniciar el servidor en segundo plano
+            # Asegurarse de que no estamos en modo GUI para evitar bucles recursivos
+            run_trading_system.gui_mode = False
+            
+            # Iniciar el servidor en segundo plano (siempre usar 127.0.0.1)
             server_started = run_trading_system.start_server_in_background(
-                ip=ip,
+                ip='127.0.0.1',  # Forzar a usar loopback para consistencia
                 data_port=port,
                 order_port=port + 1
             )
@@ -547,11 +566,11 @@ class MainApplication(tk.Frame):
                 logger.error("Conexión inicial fallida")
                 self.stats_panel.update_connection(False)
                 messagebox.showerror("Error de Conexión", 
-                                  "No se pudo establecer conexión con NinjaTrader.\n\n"
-                                  "Posibles causas:\n"
-                                  "- NinjaTrader no está ejecutándose\n"
-                                  "- La Estrategia no está activa en NinjaTrader\n"
-                                  "- IP o puerto incorrectos")
+                                "No se pudo establecer conexión con NinjaTrader.\n\n"
+                                "Posibles causas:\n"
+                                "- NinjaTrader no está ejecutándose\n"
+                                "- La Estrategia no está activa en NinjaTrader\n"
+                                "- IP o puerto incorrectos")
                 
                 # Resetear el estado de los botones para permitir intentar conectar de nuevo
                 self.control_panel.connect_button.configure(state='normal')
@@ -576,7 +595,39 @@ class MainApplication(tk.Frame):
             
     def check_connection_status(self, ip, port):
         """Verificar el estado de la conexión después de un intento"""
-        if self.nt_interface and self.nt_interface.is_connected():
+        # Dar más tiempo para la conexión inicial (especialmente en sistemas lentos)
+        retry_count = 0
+        max_retries = 5
+        
+        # Función de verificación con reintentos
+        def check_connection_with_retry():
+            nonlocal retry_count
+            
+            if not self.nt_interface:
+                return False
+                
+            # Verificar si la conexión está activa
+            is_connected = self.nt_interface.is_connected()
+            
+            # Si no está conectado pero aún tenemos reintentos, programar otro intento
+            if not is_connected and retry_count < max_retries:
+                retry_count += 1
+                logger.info(f"Esperando conexión... intento {retry_count}/{max_retries}")
+                # Programar próximo intento en 2 segundos
+                self.parent.after(2000, check_connection_with_retry)
+                return None  # Resultado pendiente
+                
+            return is_connected
+            
+        # Iniciar verificación con reintentos
+        connection_result = check_connection_with_retry()
+        
+        # Si el resultado es None, significa que estamos en proceso de reintentos
+        if connection_result is None:
+            return
+            
+        # Procesar el resultado final
+        if connection_result:
             # La conexión fue exitosa
             self.connected = True
             self.stats_panel.update_connection(True)
@@ -591,11 +642,11 @@ class MainApplication(tk.Frame):
             self.stats_panel.update_connection(False)
             
             messagebox.showerror("Error de Conexión", 
-                              "No se pudo establecer conexión con NinjaTrader.\n\n"
-                              "Posibles causas:\n"
-                              "- NinjaTrader no está ejecutándose\n"
-                              "- La Estrategia no está activa en NinjaTrader\n"
-                              "- IP o puerto incorrectos")
+                            "No se pudo establecer conexión con NinjaTrader.\n\n"
+                            "Posibles causas:\n"
+                            "- NinjaTrader no está ejecutándose\n"
+                            "- La Estrategia no está activa en NinjaTrader\n"
+                            "- IP o puerto incorrectos")
             
             logger.error("No se pudo establecer conexión con NinjaTrader")
             

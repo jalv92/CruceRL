@@ -540,13 +540,31 @@ class ChartPanel(BasePanel):
                 - mean_reward: recompensa media de todos los episodios
                 - win_rate: tasa de victorias
                 - episode: número de episodio actual
+                - progress: progreso del entrenamiento (porcentaje)
         """
         # Actualizar datos
-        self.training_data['episode_rewards'].append(training_metrics.get('episode_reward', 0))
+        episode_reward = training_metrics.get('episode_reward', 0)
+        mean_reward = training_metrics.get('mean_reward', 0)
+        win_rate = training_metrics.get('win_rate', 0)
+        
+        # Log these values to help with debugging
+        logger.info(f"Training update - Episode reward: {episode_reward:.4f}, Mean reward: {mean_reward:.4f}, Win rate: {win_rate:.4f}")
+        
+        self.training_data['episode_rewards'].append(episode_reward)
         self.training_data['episode_lengths'].append(training_metrics.get('episode_length', 0))
         self.training_data['episode_timestamps'].append(datetime.now())
-        self.training_data['mean_rewards'].append(training_metrics.get('mean_reward', 0))
-        self.training_data['win_rates'].append(training_metrics.get('win_rate', 0) * 100)  # Convertir a porcentaje
+        self.training_data['mean_rewards'].append(mean_reward)
+        self.training_data['win_rates'].append(win_rate * 100)  # Convertir a porcentaje
+        
+        # Update progress bar if progress value is provided
+        if 'progress' in training_metrics:
+            # Find the control_panel in the main application and update progress
+            for widget in self.winfo_toplevel().winfo_children():
+                if hasattr(widget, 'main_container'):
+                    for child in widget.winfo_children():
+                        if hasattr(child, 'update_progress'):
+                            child.update_progress(training_metrics['progress'])
+                            break
         
         # Obtener el número de episodio actual
         current_episode = training_metrics.get('episode', len(self.training_data['episode_rewards']))

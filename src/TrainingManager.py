@@ -37,13 +37,17 @@ class TradingTrainingCallback(BaseCallback):
     """Custom callback for monitoring training progress and adapting hyperparameters"""
     
     def __init__(self, check_freq=1000, save_path=None, verbose=1, training_callback=None, 
-                 enable_auto_tuning=True, patience=5, min_reward_improvement=0.05):
+                 enable_auto_tuning=True, patience=5, min_reward_improvement=0.05,
+                 stop_flag_callback=None):
         super(TradingTrainingCallback, self).__init__(verbose)
         self.check_freq = check_freq
         self.save_path = save_path
         self.best_reward = -np.inf
         self.training_callback = training_callback
         self.episode_count = 0
+        
+        # External stop flag callback
+        self.stop_flag_callback = stop_flag_callback
         
         # Auto-tuning parameters
         self.enable_auto_tuning = enable_auto_tuning
@@ -67,6 +71,11 @@ class TradingTrainingCallback(BaseCallback):
         logger.info("Auto-tuning of hyperparameters is enabled" if enable_auto_tuning else "Auto-tuning of hyperparameters is disabled")
     
     def _on_step(self) -> bool:
+        # Comprobar si se debe detener el entrenamiento primero
+        if self.stop_flag_callback and self.stop_flag_callback():
+            logger.info("Stop flag detected. Training will be interrupted.")
+            return False  # Esto detiene el entrenamiento
+            
         if self.n_calls % self.check_freq == 0:
             # Get current training stats
             mean_reward = np.mean([ep_info["r"] for ep_info in self.model.ep_info_buffer]) if len(self.model.ep_info_buffer) > 0 else 0
@@ -113,6 +122,11 @@ class TradingTrainingCallback(BaseCallback):
                             if env.venv.envs[0].unwrapped.trade_count > 0:
                                 win_rate = env.venv.envs[0].unwrapped.successful_trades / env.venv.envs[0].unwrapped.trade_count
                 
+                # Calculate training progress as percentage
+                total_timesteps = self.model.num_timesteps
+                target_timesteps = self.model._total_timesteps
+                progress_percent = min(int((total_timesteps / target_timesteps) * 100), 100)
+                
                 # Create metrics dict
                 metrics = {
                     'episode_reward': episode_reward,
@@ -120,7 +134,8 @@ class TradingTrainingCallback(BaseCallback):
                     'mean_reward': mean_reward,
                     'win_rate': win_rate,
                     'episode': self.episode_count,
-                    'hyperparams': self._get_current_hyperparams()
+                    'hyperparams': self._get_current_hyperparams(),
+                    'progress': progress_percent
                 }
                 
                 # Call the callback with metrics
@@ -390,8 +405,8 @@ class TrainingManager:
             'policy': 'MlpPolicy',
             'learning_rate': 0.0003,
             'batch_size': 64,
-            'n_steps': 2048,
-            'total_timesteps': 1_000_000,
+            'n_steps': 256,  # Reduced from 2048 to better handle small datasets
+            'total_timesteps': 100_000,  # Reduced from 1M to complete training faster with small datasets
             'device': 'auto'
         }
         
@@ -399,7 +414,7 @@ class TrainingManager:
             'initial_balance': 100000.0,
             'commission': 0.0001,
             'slippage': 0.0001,
-            'window_size': 10,
+            'window_size': 5,  # Reduced from 10 to handle smaller datasets
             'reward_scaling': 0.01,
             'position_size': 0.1,
             'stop_loss_pct': 0.02,
@@ -494,7 +509,14 @@ class TrainingManager:
     
     def train(self, train_data, test_data=None, training_callback=None, enable_auto_tuning=True, 
               instrument_name="Unknown", continue_training=False, existing_model_path=None, 
-              existing_vec_normalize_path=None, **kwargs):
+              existing_vec_normalize_path=None, stop_flag_callback=None, **kwargs):
+        
+        # Check if the dataset is too small and log a warning
+        min_recommended_size = 100  # Minimum recommended bars for training
+        if len(train_data) < min_recommended_size:
+            logger.warning(f"WARNING: Your training dataset only has {len(train_data)} bars. "
+                          f"This is much smaller than the recommended minimum of {min_recommended_size} bars. "
+                          f"Training results may be poor due to insufficient data.")
         """
         Train the RL model with adaptive hyperparameter tuning
         
@@ -595,7 +617,8 @@ class TrainingManager:
             save_path=None,  # Don't save intermediate models
             verbose=1,
             training_callback=training_callback,
-            enable_auto_tuning=enable_auto_tuning
+            enable_auto_tuning=enable_auto_tuning,
+            stop_flag_callback=stop_flag_callback  # Pasar el callback para verificar detención
         )
         
         # Create callback list
@@ -605,10 +628,20 @@ class TrainingManager:
         
         # Start training
         start_time = time.time()
-        model.learn(
-            total_timesteps=self.train_params['total_timesteps'],
-            callback=callbacks
-        )
+        
+        # Modificamos learn para manejar la detención externa
+        try:
+            # Añadimos la opción reset_num_timesteps=False para que no resetee el contador
+            # Esto es importante para mantener el progreso correcto
+            model.learn(
+                total_timesteps=self.train_params['total_timesteps'],
+                callback=callbacks
+            )
+            logger.info("Training completed normally")
+        except Exception as e:
+            # Capturar excepciones que puedan ocurrir por detener el entrenamiento
+            logger.warning(f"Training interrupted: {e}")
+            
         training_time = time.time() - start_time
         
         logger.info(f"Training completed in {training_time:.2f} seconds")

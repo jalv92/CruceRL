@@ -3,7 +3,10 @@ from gymnasium import spaces
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import logging
 from typing import Dict, List, Tuple, Optional, Union
+
+logger = logging.getLogger("TradingEnv")
 
 
 class TradingEnvironment(gym.Env):
@@ -112,6 +115,17 @@ class TradingEnvironment(gym.Env):
         self.trade_history = []
         self.balance_history = [self.initial_balance]
         
+        # Randomly select starting point if dataset is large enough
+        # This helps with exploration and prevents overfitting to specific market patterns
+        if len(self.df) > self.window_size * 3:
+            max_start = len(self.df) - self.window_size * 2
+            self.current_step = self.np_random.integers(0, max_start) if seed is not None else 0
+            logger.debug(f"Reset environment with random start at index {self.current_step}")
+        else:
+            # If dataset is small, always start at the beginning to maximize usable data
+            self.current_step = 0
+            logger.debug("Small dataset detected, resetting to start of data")
+        
         # Get initial state
         observation = self._get_observation()
         info = {}
@@ -135,9 +149,38 @@ class TradingEnvironment(gym.Env):
         elif action == 2:
             trade_action = -1  # Sell
         
+        # Check if we have enough data left for the next step
+        if self.current_step + self.window_size >= len(self.df):
+            # Not enough data, mark episode as done
+            done = True
+            truncated = False
+            
+            # Return the last observation, a small penalty, done=True
+            observation = self._get_observation()
+            reward = -0.0001  # Small penalty for running out of data
+            
+            info = {
+                'balance': self.balance,
+                'unrealized_pnl': 0,
+                'total_pnl': self.total_profit_loss,
+                'trade_count': self.trade_count,
+                'win_rate': self.successful_trades / max(1, self.trade_count),
+                'max_drawdown': self.max_drawdown,
+                'current_position': self.position,
+                'step': self.current_step,
+                'total_steps': self.total_steps,
+                'reward_components': {'out_of_data': reward},
+                'current_drawdown': 0
+            }
+            
+            return observation, reward, done, truncated, info
+        
         # Get current market data
-        prev_price = self.df.iloc[self.current_step + self.window_size - 1]['close']
-        current_price = self.df.iloc[self.current_step + self.window_size]['close']
+        prev_index = min(self.current_step + self.window_size - 1, len(self.df) - 1)
+        current_index = min(self.current_step + self.window_size, len(self.df) - 1)
+        
+        prev_price = self.df.iloc[prev_index]['close']
+        current_price = self.df.iloc[current_index]['close']
         
         # Initialize reward components dictionary
         reward_components = {
@@ -220,6 +263,7 @@ class TradingEnvironment(gym.Env):
             self.trade_count += 1
             if pnl_amount > 0:
                 self.successful_trades += 1
+                logger.info(f"Successful trade: PnL = ${pnl_amount:.2f}, Win rate: {self.successful_trades}/{self.trade_count} ({self.successful_trades / self.trade_count * 100:.1f}%)")
             
             # Log the trade
             trade_info = {
@@ -284,6 +328,7 @@ class TradingEnvironment(gym.Env):
                 self.trade_count += 1
                 if pnl_amount > 0:
                     self.successful_trades += 1
+                    logger.info(f"Successful trade: PnL = ${pnl_amount:.2f}, Win rate: {self.successful_trades}/{self.trade_count} ({self.successful_trades / self.trade_count * 100:.1f}%)")
                 
                 # Log the trade
                 trade_info = {
@@ -429,6 +474,9 @@ class TradingEnvironment(gym.Env):
         # Get the window of price data
         window_data = self.df.iloc[start_idx:end_idx]
         
+        # Check if we have enough data for the window
+        actual_window_size = len(window_data)
+        
         # Extract features
         features = []
         for idx, row in window_data.iterrows():
@@ -461,6 +509,21 @@ class TradingEnvironment(gym.Env):
             # Combine features with account state
             combined_features = np.concatenate([bar_features, account_state])
             features.append(combined_features)
+        
+        # Handle case where we don't have enough data to fill the window
+        # Pad the observation with repeats of the last observation if needed
+        num_missing = self.window_size - actual_window_size
+        if num_missing > 0:
+            # If we have no features at all, create default features
+            if len(features) == 0:
+                # Create a default feature row (zeros)
+                default_features = np.zeros((self.feature_dim + self.account_dim,), dtype=np.float32)
+                features = [default_features] * self.window_size
+            else:
+                # Repeat the last observation to fill the window
+                last_feature = features[-1]
+                for _ in range(num_missing):
+                    features.append(last_feature)
         
         return np.array(features, dtype=np.float32)
     

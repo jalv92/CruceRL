@@ -246,10 +246,19 @@ class MainApplication(tk.Frame):
         self.paused = paused
         logger.info(f"Proceso {'pausado' if paused else 'reanudado'}")
         
-        # Si estamos en modo de entrenamiento, podría necesitar lógica adicional
+        # Si estamos en modo de entrenamiento, implementar una pausa real
         if hasattr(self, 'training_manager') and self.training_manager:
-            # Aquí podría ir lógica específica para pausar el entrenamiento
-            pass
+            # Esperar a que el hilo de entrenamiento detecte la bandera de pausa
+            # Implementar un mecanismo de espera activa cuando está pausado
+            if self.paused:
+                # Cuando se pausa, mostramos un mensaje y esperamos
+                logger.info("Entrenamiento en pausa. Presione 'Resume' para continuar.")
+                # Mientras la pausa esté activa, el hilo de trabajo debería revisar
+                # regularmente el valor de self.paused antes de continuar con
+                # el siguiente paso del entrenamiento
+            else:
+                # Cuando se reanuda, continuamos el proceso
+                logger.info("Entrenamiento reanudado.")
             
     def toggle_auto_trading(self):
         """Activa o desactiva el auto trading"""
@@ -359,10 +368,24 @@ class MainApplication(tk.Frame):
         self.running = False
         logger.info("Deteniendo proceso...")
         
-        # Si hay un hilo en ejecución, esperar a que termine
+        # Forzar un SystemExit en el hilo de trabajo para detenerlo inmediatamente
         if self.worker_thread and self.worker_thread.is_alive():
-            # No bloquear la UI mientras esperamos
-            pass
+            import ctypes
+            thread_id = self.worker_thread.ident
+            if thread_id:
+                try:
+                    # Esto fuerza la interrupción del hilo de trabajo
+                    res = ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(thread_id), 
+                                                                   ctypes.py_object(SystemExit))
+                    if res > 1:
+                        # Si devuelve más de 1, algo salió mal y debemos limpiar
+                        ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(thread_id), None)
+                    logger.info("Hilo de trabajo terminado forzosamente")
+                except Exception as e:
+                    logger.error(f"Error al terminar el hilo de trabajo: {e}")
+            
+            # Establecer worker_thread a None para evitar futuros problemas
+            self.worker_thread = None
             
         logger.info("Proceso detenido correctamente")
         
@@ -719,21 +742,44 @@ class MainApplication(tk.Frame):
                 enable_auto_tuning = params.pop('enable_auto_tuning', True)
                 logger.info(f"Auto-tuning of hyperparameters: {'Enabled' if enable_auto_tuning else 'Disabled'}")
                 
+                # Implementar verificación de pausa
+                def check_pause():
+                    while self.paused and self.running:
+                        # Si está pausado, esperar y verificar periódicamente
+                        time.sleep(0.5)  # Verificar cada 0.5 segundos
+                        self.parent.update_idletasks()  # Mantener UI responsive
+                    
+                    # Verificar si se ha detenido el entrenamiento durante la pausa
+                    return self.running  # True si debemos continuar, False si detener
+                
                 # Definir función de callback para actualizar la interfaz
                 def update_training_ui(metrics):
+                    # Verificar pausa antes de continuar
+                    if not check_pause():
+                        return  # Si se detuvo durante la pausa, no seguir
                     # Actualizar interfaz en el hilo principal
                     self.parent.after(0, lambda: self.chart_panel.update_training_metrics(metrics))
                     
-                    # Actualizar también la barra de progreso si hay total_timesteps disponible
-                    if 'episode' in metrics and params.get('total_timesteps'):
+                    # Actualizar la barra de progreso usando el valor actual de timesteps del modelo
+                    if 'progress' in metrics:
+                        # Usar el progreso calculado por el callback directamente
+                        self.parent.after(0, lambda p=metrics['progress']: self.control_panel.update_progress(p))
+                    # Compatibilidad con versiones antiguas sin el campo progress
+                    elif 'episode' in metrics and params.get('total_timesteps'):
                         progress = min(100, (metrics['episode'] * 100) / (params.get('total_timesteps') / 5000))
-                        self.parent.after(0, lambda: self.control_panel.update_progress(progress))
+                        self.parent.after(0, lambda p=progress: self.control_panel.update_progress(p))
                 
-                # Iniciar entrenamiento con el callback
+                # Definir callback para verificar si se debe detener el entrenamiento
+                def check_stop():
+                    # Verificar la bandera running para detener el entrenamiento
+                    return not self.running
+                
+                # Iniciar entrenamiento con los callbacks
                 model, train_env = self.training_manager.train(
                     train_data, test_data,
                     training_callback=update_training_ui,
                     enable_auto_tuning=enable_auto_tuning,  # Pasar explícitamente
+                    stop_flag_callback=check_stop,  # Añadir callback para verificar detención
                     **params
                 )
                 

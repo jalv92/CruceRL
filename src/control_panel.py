@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 
 # Importamos colores y clases base
 from src.RLTradingSystemGUI import COLORS, BasePanel
@@ -124,7 +124,77 @@ class ControlPanel(BasePanel):
         )
         self.train_config_button.pack(side=tk.LEFT, padx=(10,0), pady=5)
 
-        # Barra de progreso
+        # Frame de botones - MOVIDO ANTES de la barra de progreso
+        buttons_frame = tk.Frame(container, bg=COLORS['bg_dark'])
+        buttons_frame.pack(fill=tk.X, pady=5)
+
+        for i in range(4):
+            buttons_frame.columnconfigure(i, weight=1)
+
+        self.start_button = tk.Button(
+            buttons_frame, text="Start",
+            command=self.on_start_click,
+            bg=COLORS['green'], fg=COLORS['fg_white'],
+            activebackground="#7ebe77",
+            activeforeground=COLORS['fg_white'],
+            font=('Segoe UI', 10, 'bold'),
+            relief=tk.FLAT, bd=0, padx=10, pady=5
+        )
+        self.start_button.grid(row=0, column=0, padx=5, sticky='ew')
+
+        self.pause_button = tk.Button(
+            buttons_frame, text="Pause",
+            command=self.on_pause_click,
+            bg=COLORS['yellow'], fg=COLORS['bg_very_dark'],
+            activebackground="#ffdb4a",
+            activeforeground=COLORS['bg_very_dark'],
+            font=('Segoe UI', 10, 'bold'),
+            relief=tk.FLAT, bd=0, padx=10, pady=5,
+            state='disabled'
+        )
+        self.pause_button.grid(row=0, column=1, padx=5, sticky='ew')
+
+        self.stop_button = tk.Button(
+            buttons_frame, text="Stop",
+            command=self.on_stop_click,
+            bg=COLORS['red'], fg=COLORS['fg_white'],
+            activebackground="#ff6b68",
+            activeforeground=COLORS['fg_white'],
+            font=('Segoe UI', 10, 'bold'),
+            relief=tk.FLAT, bd=0, padx=10, pady=5,
+            state='disabled'
+        )
+        self.stop_button.grid(row=0, column=2, padx=5, sticky='ew')
+
+        # Auto trading
+        auto_frame = tk.Frame(buttons_frame, bg=COLORS['bg_dark'])
+        auto_frame.grid(row=0, column=3, padx=5, sticky='ew')
+
+        tk.Label(
+            auto_frame, text="Auto Trading:",
+            bg=COLORS['bg_dark'], fg=COLORS['fg_light'],
+            font=('Segoe UI', 10)
+        ).pack(side=tk.LEFT, padx=(0,5))
+
+        self.switch_var = tk.BooleanVar(value=False)
+        self.switch_canvas = tk.Canvas(
+            auto_frame, width=40, height=20,
+            bg=COLORS['bg_medium'], highlightthickness=0, bd=0
+        )
+        self.switch_canvas.pack(side=tk.LEFT)
+
+        self.switch_bg = self.switch_canvas.create_rectangle(
+            0, 0, 40, 20,
+            fill=COLORS['bg_medium'], width=0, outline=""
+        )
+        self.switch_handle = self.switch_canvas.create_oval(
+            2, 2, 18, 18,
+            fill=COLORS['bg_light'], width=0, outline=""
+        )
+
+        self.switch_canvas.bind("<Button-1>", self.toggle_switch)
+
+        # Barra de progreso - MOVIDA DESPUÉS de los botones
         progress_frame = tk.Frame(container, bg=COLORS['bg_dark'])
         progress_frame.pack(fill=tk.X, pady=5)
 
@@ -143,10 +213,6 @@ class ControlPanel(BasePanel):
         ).pack(side=tk.LEFT, padx=(0,5))
 
         self.progress_rect = self.progress_canvas.create_rectangle(0, 0, 0, 20, fill=COLORS['accent'], width=0)
-
-        # Frame de botones
-        buttons_frame = tk.Frame(container, bg=COLORS['bg_dark'])
-        buttons_frame.pack(fill=tk.X, pady=10)
 
         for i in range(4):
             buttons_frame.columnconfigure(i, weight=1)
@@ -301,11 +367,21 @@ class ControlPanel(BasePanel):
             self.disconnect_button.configure(state='disabled')
 
     def update_progress(self, value):
+        """Update the progress bar with the given percentage value"""
+        # Ensure value is a valid percentage (0-100)
+        value = max(0, min(100, value))
+        
+        # Store the progress value and update the text
         self.progress_value = value
         self.progress_text.set(f"{int(value)}%")
+        
+        # Update the progress bar width
         width = self.progress_canvas.winfo_width()
         progress_width = (value / 100) * width
         self.progress_canvas.coords(self.progress_rect, 0, 0, progress_width, 20)
+        
+        # Force update to ensure the UI reflects changes immediately
+        self.progress_canvas.update_idletasks()
 
     def reset_progress(self):
         self.progress_value = 0

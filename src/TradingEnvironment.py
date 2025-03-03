@@ -18,7 +18,7 @@ class TradingEnvironment(gym.Env):
                  commission: float = 0.0001, slippage: float = 0.0001,
                  reward_scaling: float = 0.05, position_size: float = 1.0,
                  stop_loss_pct: Optional[float] = 0.02, take_profit_pct: Optional[float] = 0.04,
-                 inactivity_penalty: float = -0.00005, bankruptcy_penalty: float = -1.0,
+                 inactivity_penalty: float = -0.00002, bankruptcy_penalty: float = -1.0,
                  drawdown_factor: float = 0.2, win_rate_bonus: float = 0.0005,
                  normalize_rewards: bool = True, capital_efficiency_bonus: float = 0.0,
                  time_decay_factor: float = 0.0):
@@ -58,13 +58,16 @@ class TradingEnvironment(gym.Env):
         self.window_size = window_size
         self.commission = commission
         self.slippage = slippage
-        self.reward_scaling = reward_scaling
+        
+        # Enhanced reward scaling (5x the original value)
+        self.reward_scaling = reward_scaling * 5  
+        
         self.position_size = position_size
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
         
-        # Store new reward parameters
-        self.inactivity_penalty = inactivity_penalty
+        # Store new reward parameters - reduced inactivity penalty
+        self.inactivity_penalty = inactivity_penalty * 0.5  # Reduced penalty
         self.bankruptcy_penalty = bankruptcy_penalty
         self.drawdown_factor = drawdown_factor
         self.win_rate_bonus = win_rate_bonus
@@ -72,8 +75,15 @@ class TradingEnvironment(gym.Env):
         self.capital_efficiency_bonus = capital_efficiency_bonus
         self.time_decay_factor = time_decay_factor
         
-        # Set the maximum number of steps
-        self.max_steps = len(df) - window_size if max_steps is None else min(max_steps, len(df) - window_size)
+        # Set the maximum number of steps - adjusted for better episode length
+        if max_steps is None:
+            # Use 90% of available data to ensure episodes don't terminate too quickly
+            self.max_steps = max(int((len(df) - window_size) * 0.9), 1)
+        else:
+            # Make sure we don't exceed available data
+            self.max_steps = min(max_steps, len(df) - window_size - 1)
+        
+        logger.info(f"Environment initialized with {len(df)} bars, max_steps={self.max_steps}")
         
         # Define action and observation space
         # Actions: 0 = Hold, 1 = Buy, 2 = Sell
@@ -96,7 +106,6 @@ class TradingEnvironment(gym.Env):
         super().reset(seed=seed)
         
         # Reset internal pointers
-        self.current_step = 0
         self.total_steps = 0
         self.balance = self.initial_balance
         self.position = 0  # 0: no position, 1: long, -1: short
@@ -115,16 +124,23 @@ class TradingEnvironment(gym.Env):
         self.trade_history = []
         self.balance_history = [self.initial_balance]
         
-        # Randomly select starting point if dataset is large enough
-        # This helps with exploration and prevents overfitting to specific market patterns
+        # Improved random starting point selection to ensure longer episodes
         if len(self.df) > self.window_size * 3:
-            max_start = len(self.df) - self.window_size * 2
-            self.current_step = self.np_random.integers(0, max_start) if seed is not None else 0
-            logger.debug(f"Reset environment with random start at index {self.current_step}")
+            # Set max_start to ensure at least window_size*2 steps are possible
+            max_start = max(0, len(self.df) - self.window_size * 3)
+            
+            # Only use random start if seed is provided
+            if seed is not None:
+                self.current_step = self.np_random.integers(0, max_start)
+            else:
+                # Otherwise use beginning to maximize available data
+                self.current_step = 0
+                
+            logger.info(f"Reset environment with start at index {self.current_step}, {len(self.df) - self.current_step} bars available")
         else:
-            # If dataset is small, always start at the beginning to maximize usable data
+            # Dataset is too small, always start at the beginning
             self.current_step = 0
-            logger.debug("Small dataset detected, resetting to start of data")
+            logger.warning(f"Small dataset detected ({len(self.df)} bars), starting from beginning")
         
         # Get initial state
         observation = self._get_observation()
@@ -150,10 +166,12 @@ class TradingEnvironment(gym.Env):
             trade_action = -1  # Sell
         
         # Check if we have enough data left for the next step
-        if self.current_step + self.window_size >= len(self.df):
+        if self.current_step + self.window_size >= len(self.df) - 1:
             # Not enough data, mark episode as done
             done = True
             truncated = False
+            
+            logger.debug(f"Episode terminated: Reached end of data at step {self.current_step}")
             
             # Return the last observation, a small penalty, done=True
             observation = self._get_observation()
@@ -267,8 +285,8 @@ class TradingEnvironment(gym.Env):
             
             # Log the trade
             trade_info = {
-                'entry_time': self.df.index[self.entry_idx],
-                'exit_time': self.df.index[self.current_step + self.window_size],
+                'entry_time': self.df.index[self.entry_idx] if hasattr(self.df.index, '__getitem__') else None,
+                'exit_time': self.df.index[self.current_step + self.window_size] if hasattr(self.df.index, '__getitem__') else None,
                 'entry_price': self.entry_price,
                 'exit_price': exit_price,
                 'position': self.position,
@@ -306,6 +324,9 @@ class TradingEnvironment(gym.Env):
         # Process new trade action if we don't have a position or are changing position
         if not sl_tp_triggered and ((self.position == 0 and trade_action != 0) or 
                                     (self.position != 0 and trade_action != 0 and self.position != trade_action)):
+            # Add debug logging for action monitoring
+            logger.debug(f"Taking trade action {trade_action} at step {self.current_step}, current price: {current_price}")
+            
             # Close existing position if any
             if self.position != 0:
                 # Calculate P&L for this trade
@@ -332,8 +353,8 @@ class TradingEnvironment(gym.Env):
                 
                 # Log the trade
                 trade_info = {
-                    'entry_time': self.df.index[self.entry_idx],
-                    'exit_time': self.df.index[self.current_step + self.window_size],
+                    'entry_time': self.df.index[self.entry_idx] if hasattr(self.df.index, '__getitem__') else None,
+                    'exit_time': self.df.index[self.current_step + self.window_size] if hasattr(self.df.index, '__getitem__') else None,
                     'entry_price': self.entry_price,
                     'exit_price': current_price,
                     'position': self.position,
@@ -383,13 +404,15 @@ class TradingEnvironment(gym.Env):
                 
                 # Log the trade entry
                 trade_info = {
-                    'entry_time': self.df.index[self.entry_idx],
+                    'entry_time': self.df.index[self.entry_idx] if hasattr(self.df.index, '__getitem__') else None,
                     'entry_price': self.entry_price,
                     'position': self.position,
                     'balance': self.balance,
                     'entry_reason': 'signal'
                 }
                 self.trade_history.append(trade_info)
+                
+                logger.debug(f"Entered new position: {trade_action} at price {self.entry_price}")
         
         # Calculate unrealized P&L if we have a position
         unrealized_pnl = 0
@@ -438,6 +461,9 @@ class TradingEnvironment(gym.Env):
         # Calculate total reward
         reward = sum(reward_components.values())
         
+        # Extra debugging for reward components
+        logger.debug(f"Reward components: {reward_components}, total: {reward}")
+        
         # Get the new observation
         observation = self._get_observation()
         
@@ -470,6 +496,9 @@ class TradingEnvironment(gym.Env):
         # Calculate the starting point for the window
         start_idx = self.current_step
         end_idx = self.current_step + self.window_size
+        
+        # Make sure we don't exceed the length of the dataframe
+        end_idx = min(end_idx, len(self.df))
         
         # Get the window of price data
         window_data = self.df.iloc[start_idx:end_idx]
@@ -514,6 +543,7 @@ class TradingEnvironment(gym.Env):
         # Pad the observation with repeats of the last observation if needed
         num_missing = self.window_size - actual_window_size
         if num_missing > 0:
+            logger.debug(f"Padding observation with {num_missing} repeated rows")
             # If we have no features at all, create default features
             if len(features) == 0:
                 # Create a default feature row (zeros)

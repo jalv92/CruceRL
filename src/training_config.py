@@ -522,6 +522,20 @@ class TrainingConfigDialog(tk.Toplevel):
         self.time_decay_factor_var.set(self.config_panel.time_decay_factor_var.get())
     
     def on_ok(self):
+        # Check for invalid values
+        try:
+            # Validate numeric values for critical parameters
+            float(self.learning_rate_var.get())
+            int(self.timesteps_var.get())
+            int(self.batch_size_var.get())
+            int(self.n_steps_var.get())
+            float(self.reward_scaling_var.get())
+            float(self.inactivity_penalty_var.get())
+            float(self.window_size_var.get())
+        except ValueError as e:
+            messagebox.showerror("Invalid Parameters", f"Please enter valid numeric values: {e}")
+            return
+            
         # Sincronizar valores del diálogo con el panel de configuración
         # Algoritmo
         self.config_panel.algo_var.set(self.algo_var.get())
@@ -562,8 +576,43 @@ class TrainingConfigPanel(BasePanel):
         super().__init__(parent, title="Training Configuration")
         self.setup_ui()
         
+    def get_optimized_defaults(self):
+        """Return optimized default hyperparameters"""
+        return {
+            # Algo settings
+            'algo': 'PPO',
+            'timesteps': '500000',
+            'learning_rate': '0.0001',  # Lower learning rate for stability
+            'batch_size': '128',        # Larger batch size
+            'n_steps': '1024',          # Shorter steps for faster updates
+            'device': 'auto',
+            'auto_tune': True,
+            
+            # Environment settings
+            'balance': '100000.0',
+            'commission': '0.0001',
+            'slippage': '0.0001',
+            'window_size': '5',         # Smaller window for easier learning
+            'position_size': '0.1',
+            'stop_loss': '0.02',
+            'take_profit': '0.04',
+            
+            # Reward settings
+            'reward_scaling': '0.05',
+            'inactivity_penalty': '-0.00002',  # Reduced penalty
+            'bankruptcy_penalty': '-1.0',
+            'drawdown_factor': '0.1',          # Lower penalty
+            'win_rate_bonus': '0.001',
+            'normalize_rewards': True,
+            'capital_efficiency_bonus': '0.0001',
+            'time_decay_factor': '0.0',
+        }
+        
     def setup_ui(self):
         container = self.main_container
+        
+        # Get optimized defaults
+        defaults = self.get_optimized_defaults()
         
         # Usamos grid para organizar los controles
         container.columnconfigure(0, weight=1)
@@ -588,14 +637,33 @@ class TrainingConfigPanel(BasePanel):
             'highlightbackground': COLORS['border']
         }
         
-        # Variables
-        self.algo_var = tk.StringVar(value="PPO")
-        self.timesteps_var = tk.StringVar(value="500000")
-        self.learning_rate_var = tk.StringVar(value="0.0003")
-        self.batch_size_var = tk.StringVar(value="64")
-        self.n_steps_var = tk.StringVar(value="2048")
-        self.device_var = tk.StringVar(value="auto")
-        self.auto_tune_var = tk.BooleanVar(value=True)  # Añadido para auto-tuning
+        # Use defaults to initialize variables
+        self.algo_var = tk.StringVar(value=defaults['algo'])
+        self.timesteps_var = tk.StringVar(value=defaults['timesteps'])
+        self.learning_rate_var = tk.StringVar(value=defaults['learning_rate'])
+        self.batch_size_var = tk.StringVar(value=defaults['batch_size'])
+        self.n_steps_var = tk.StringVar(value=defaults['n_steps'])
+        self.device_var = tk.StringVar(value=defaults['device'])
+        self.auto_tune_var = tk.BooleanVar(value=defaults['auto_tune'])
+        
+        # Environment variables
+        self.balance_var = tk.StringVar(value=defaults['balance'])
+        self.commission_var = tk.StringVar(value=defaults['commission'])
+        self.slippage_var = tk.StringVar(value=defaults['slippage'])
+        self.window_size_var = tk.StringVar(value=defaults['window_size'])
+        self.position_size_var = tk.StringVar(value=defaults['position_size']) 
+        self.stop_loss_var = tk.StringVar(value=defaults['stop_loss'])
+        self.take_profit_var = tk.StringVar(value=defaults['take_profit'])
+        
+        # Reward variables
+        self.reward_scaling_var = tk.StringVar(value=defaults['reward_scaling'])
+        self.inactivity_penalty_var = tk.StringVar(value=defaults['inactivity_penalty'])
+        self.bankruptcy_penalty_var = tk.StringVar(value=defaults['bankruptcy_penalty'])
+        self.drawdown_factor_var = tk.StringVar(value=defaults['drawdown_factor'])
+        self.win_rate_bonus_var = tk.StringVar(value=defaults['win_rate_bonus'])
+        self.normalize_rewards_var = tk.BooleanVar(value=defaults['normalize_rewards'])
+        self.capital_efficiency_bonus_var = tk.StringVar(value=defaults['capital_efficiency_bonus'])
+        self.time_decay_factor_var = tk.StringVar(value=defaults['time_decay_factor'])
         
         # Crear notebook para pestañas
         self.notebook = ttk.Notebook(container)
@@ -695,15 +763,6 @@ class TrainingConfigPanel(BasePanel):
         env_frame.columnconfigure(2, weight=1)
         env_frame.columnconfigure(3, weight=1)
         
-        # Variables de entorno
-        self.balance_var = tk.StringVar(value="100000.0")
-        self.commission_var = tk.StringVar(value="0.0001")
-        self.slippage_var = tk.StringVar(value="0.0001")
-        self.window_size_var = tk.StringVar(value="10")
-        self.position_size_var = tk.StringVar(value="0.1")
-        self.stop_loss_var = tk.StringVar(value="0.02")
-        self.take_profit_var = tk.StringVar(value="0.04")
-        
         # Añadir campos para el entorno
         row = 0
         
@@ -756,16 +815,6 @@ class TrainingConfigPanel(BasePanel):
         reward_frame.columnconfigure(1, weight=1)
         reward_frame.columnconfigure(2, weight=1)
         reward_frame.columnconfigure(3, weight=1)
-        
-        # Variables del sistema de recompensas
-        self.reward_scaling_var = tk.StringVar(value="0.05")
-        self.inactivity_penalty_var = tk.StringVar(value="-0.00005")
-        self.bankruptcy_penalty_var = tk.StringVar(value="-1.0")
-        self.drawdown_factor_var = tk.StringVar(value="0.2")
-        self.win_rate_bonus_var = tk.StringVar(value="0.0005")
-        self.normalize_rewards_var = tk.BooleanVar(value=True)
-        self.capital_efficiency_bonus_var = tk.StringVar(value="0.0")
-        self.time_decay_factor_var = tk.StringVar(value="0.0")
         
         row = 0
         
@@ -910,26 +959,110 @@ class TrainingConfigPanel(BasePanel):
         self.preset_description.delete(1.0, tk.END)
         
         if preset_type == "hft":
-            # Trading de Alta Frecuencia
+            # Trading de Alta Frecuencia - Valores mejorados para el aprendizaje
+            self.algo_var.set("PPO")
+            self.learning_rate_var.set("0.0001")
+            self.batch_size_var.set("128")
+            self.n_steps_var.set("512")
+            self.timesteps_var.set("600000")
+            
+            # Parámetros de entorno
+            self.window_size_var.set("5")
+            self.commission_var.set("0.0002")
+            self.slippage_var.set("0.0002")
+            self.position_size_var.set("0.05")
+            self.stop_loss_var.set("0.01")
+            self.take_profit_var.set("0.02")
+            
+            # Parámetros de recompensa
             self.reward_scaling_var.set("0.05")
-            self.inactivity_penalty_var.set("-0.0003")
+            self.inactivity_penalty_var.set("-0.00002")
             self.time_decay_factor_var.set("0.001")
-            self.commission_var.set("0.0002")  # Mayor comisión típica en HFT
-            self.slippage_var.set("0.0002")    # Mayor slippage en HFT
-            self.position_size_var.set("0.05")  # Posiciones más pequeñas
-            self.stop_loss_var.set("0.01")     # Stop loss más ajustado
-            self.take_profit_var.set("0.02")    # Take profit más ajustado
+            self.drawdown_factor_var.set("0.1")
             
             description = """Trading de Alta Frecuencia
 
         Configuración optimizada para estrategias de trading de alta frecuencia que buscan capitalizar movimientos pequeños y rápidos del mercado.
 
         Características principales:
-        - Penalización mayor por inactividad para fomentar operaciones frecuentes
+        - Penalización menor por inactividad para evitar sobre-trading
         - Factor de descuento temporal para favorecer operaciones más cortas
         - Stops y targets más ajustados
         - Posiciones más pequeñas para gestionar el riesgo
         - Mayor factor de escalado de recompensa"""
+        
+            self.preset_description.insert(tk.END, description)
+            self.preset_description.config(state=tk.DISABLED)
+            
+        elif preset_type == "position":
+            # Trading de Posición - Valores mejorados para el aprendizaje
+            self.algo_var.set("PPO")
+            self.learning_rate_var.set("0.00005")
+            self.batch_size_var.set("256")
+            self.n_steps_var.set("1024")
+            self.timesteps_var.set("700000")
+            
+            # Parámetros de entorno
+            self.window_size_var.set("8")
+            self.commission_var.set("0.0001")
+            self.slippage_var.set("0.0001")
+            self.position_size_var.set("0.1")
+            self.stop_loss_var.set("0.03")
+            self.take_profit_var.set("0.06")
+            
+            # Parámetros de recompensa
+            self.reward_scaling_var.set("0.03")
+            self.inactivity_penalty_var.set("-0.00001")
+            self.win_rate_bonus_var.set("0.005")
+            self.drawdown_factor_var.set("0.1")
+            
+            description = """Trading de Posición
+
+        Configuración optimizada para estrategias de trading de posición que mantienen operaciones durante periodos más largos buscando movimientos de precio mayores.
+
+        Características principales:
+        - Penalización muy pequeña por inactividad para permitir gran paciencia
+        - Mayor bonificación por win rate
+        - Stops y targets más amplios
+        - Tamaño de ventana más grande para capturar movimientos de más largo plazo
+        - Tasa de aprendizaje reducida para más estabilidad"""
+        
+            self.preset_description.insert(tk.END, description)
+            self.preset_description.config(state=tk.DISABLED)
+            
+        elif preset_type == "trend":
+            # Trading de Tendencia - Valores mejorados para el aprendizaje
+            self.algo_var.set("PPO")
+            self.learning_rate_var.set("0.0001")
+            self.batch_size_var.set("128")
+            self.n_steps_var.set("1024")
+            self.timesteps_var.set("600000")
+            
+            # Parámetros de entorno
+            self.window_size_var.set("6")
+            self.commission_var.set("0.0001")
+            self.slippage_var.set("0.0001")
+            self.position_size_var.set("0.15")
+            self.stop_loss_var.set("0.03")
+            self.take_profit_var.set("0.09")
+            
+            # Parámetros de recompensa
+            self.reward_scaling_var.set("0.04")
+            self.inactivity_penalty_var.set("-0.00001")
+            self.win_rate_bonus_var.set("0.001")
+            self.drawdown_factor_var.set("0.05")
+            self.normalize_rewards_var.set(True)
+            
+            description = """Trading de Tendencia
+
+        Configuración optimizada para estrategias de trading que buscan identificar y seguir tendencias de mercado.
+
+        Características principales:
+        - Ratio de riesgo/recompensa elevado (1:3)
+        - Posiciones mayores cuando se identifica una tendencia
+        - Factor de drawdown reducido para permitir drawdowns en operaciones de tendencia
+        - Normalización de recompensas para estabilidad en operaciones largas
+        - Tasa de aprendizaje ajustada para aprender patrones de tendencia"""
         
             self.preset_description.insert(tk.END, description)
             self.preset_description.config(state=tk.DISABLED)
@@ -956,7 +1089,7 @@ class TrainingConfigPanel(BasePanel):
                 'batch_size': int(self.batch_size_var.get()),
                 'n_steps': int(self.n_steps_var.get()),
                 'device': self.device_var.get(),
-                'enable_auto_tuning': bool(self.auto_tune_var.get()),  # Añadido para auto-tuning
+                'enable_auto_tuning': bool(self.auto_tune_var.get()),
             }
             
             # Parámetros del entorno

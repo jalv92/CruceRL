@@ -322,17 +322,21 @@ class DataLoader:
         
         # Simple calculation for ADX (Directional Movement Index)
         # For simplicity, we'll use a very basic proxy for ADX
-        df['up_move'] = df['high'].diff()
-        df['down_move'] = df['low'].diff().abs()
-        
-        df['plus_dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0)
-        df['minus_dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0)
-        
-        # Simplified ADX
-        df['plus_di'] = 100 * df['plus_dm'].rolling(window=14).mean() / df['atr']
-        df['minus_di'] = 100 * df['minus_dm'].rolling(window=14).mean() / df['atr']
-        df['dx'] = 100 * np.abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
-        df['adx'] = df['dx'].rolling(window=14).mean()
+        if 'adx' not in df.columns:
+            df['up_move'] = df['high'].diff()
+            df['down_move'] = df['low'].diff().abs()
+            
+            df['plus_dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0)
+            df['minus_dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0)
+            
+            # Simplified ADX
+            df['plus_di'] = 100 * df['plus_dm'].rolling(window=14).mean() / df['atr'].replace(0, 0.001)
+            df['minus_di'] = 100 * df['minus_dm'].rolling(window=14).mean() / df['atr'].replace(0, 0.001)
+            
+            # Avoid division by zero
+            sum_di = df['plus_di'] + df['minus_di']
+            df['dx'] = 100 * np.abs(df['plus_di'] - df['minus_di']) / sum_di.replace(0, 0.001)
+            df['adx'] = df['dx'].rolling(window=14).mean()
         
         # Drop rows with NaN values
         df.dropna(inplace=True)
@@ -360,8 +364,13 @@ class DataLoader:
             
             # Check if we have enough data
             if len(data) < self.min_bars:
-                logger.warning(f"CSV data has only {len(data)} bars, which is less than the recommended {self.min_bars}. " +
-                              f"Using available data without synthetic supplement.")
+                logger.warning(f"CSV data has only {len(data)} bars, which is less than the recommended {self.min_bars} bars.")
+                logger.warning("Training results may be poor with insufficient data.")
+                
+                # If we have extremely small dataset, raise an error
+                if len(data) < 100:  # Minimum practical size for any meaningful training
+                    logger.error(f"Dataset size ({len(data)} bars) is too small for effective training. Need at least 100 bars.")
+                    raise ValueError(f"Dataset size ({len(data)} bars) is too small for effective training")
             
             # Add technical indicators if not present
             required_columns = ['ema_short', 'ema_long', 'atr', 'adx']
@@ -371,7 +380,27 @@ class DataLoader:
         # Sort by index (timestamp) to ensure chronological order
         data.sort_index(inplace=True)
         
-        # Split into train and test sets
+        # Ensure we have enough data for window_size
+        window_size = 10  # Default window size used in TradingEnvironment
+        if len(data) < window_size * 3:
+            logger.error(f"Dataset has only {len(data)} bars, which is less than {window_size * 3} (3x window_size).")
+            logger.error("Please provide more data or reduce window_size in TradingEnvironment")
+            raise ValueError(f"Insufficient data for training with window_size={window_size}")
+        
+        # Split into train and test sets, ensuring minimum sizes for both
+        min_train_size = max(window_size * 5, 100)  # At least 5x window_size or 100 bars
+        min_test_size = max(window_size * 2, 50)    # At least 2x window_size or 50 bars
+        
+        # Adjust test_ratio if needed to ensure minimum sizes
+        if len(data) * test_ratio < min_test_size:
+            test_ratio = min_test_size / len(data)
+            logger.warning(f"Adjusted test_ratio to {test_ratio:.2f} to ensure minimum test set size")
+        
+        if len(data) * (1 - test_ratio) < min_train_size:
+            # If we can't satisfy both constraints, prioritize training set
+            test_ratio = max(0.1, 1 - (min_train_size / len(data)))
+            logger.warning(f"Adjusted test_ratio to {test_ratio:.2f} to ensure minimum training set size")
+        
         split_idx = int(len(data) * (1 - test_ratio))
         train_data = data.iloc[:split_idx]
         test_data = data.iloc[split_idx:]

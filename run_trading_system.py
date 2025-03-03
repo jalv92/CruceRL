@@ -61,9 +61,19 @@ def start_server_in_background(ip='127.0.0.1', data_port=5000, order_port=5001, 
         logger.info("Servidores iniciados correctamente. Esperando conexiones de NinjaTrader...")
         
         # Activar trading automático si se proporcionó un modelo
-        if model_path and vec_normalize_path:
+        if model_path:
+            # Esperar un momento para establecer la conexión
+            time.sleep(2)
+            
+            # Activar el auto-trading
             nt_interface.set_auto_trading(True)
-            logger.info("Trading automático ACTIVADO")
+            logger.info("===> Trading automático ACTIVADO - el sistema ahora enviará señales de trading <===")
+            
+            # Hacer un ping para verificar que la conexión está activa
+            if nt_interface.is_connected():
+                logger.info("Conexión con NinjaTrader confirmada - listo para enviar señales de trading")
+            else:
+                logger.warning("No se detecta conexión con NinjaTrader - verificar que el indicador esté ejecutándose")
         
         return True
     else:

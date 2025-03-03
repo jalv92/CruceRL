@@ -102,7 +102,7 @@ def train_model(args):
     
     # Entrena el modelo
     logger.info("Iniciando entrenamiento del modelo RL...")
-    model, train_env = training_manager.train(
+    model, train_env, model_path, vec_norm_path = training_manager.train(
         train_data, test_data,
         **train_params, **env_params
     )

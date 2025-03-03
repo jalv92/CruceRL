@@ -189,7 +189,7 @@ class RLAgent:
                 self.model = None
                 self.vec_normalize = None
     
-    def get_action(self, market_data: MarketData) -> Tuple[int, str, float, float, float]:
+    def get_action(self, market_data: MarketData) -> Tuple[int, int, float, float, float]:
         """Get trading action based on market data
         
         Args:
@@ -198,14 +198,14 @@ class RLAgent:
         Returns:
             Tuple containing:
                 - trade_signal: -1 (sell), 0 (no trade), 1 (buy)
-                - ema_choice: 'short', 'long', or 'both' (which EMA to follow)
+                - ema_choice: 0 (short), 1 (long), or 2 (both) - integer values for NinjaTrader
                 - position_size: size of position to take (1.0 = 100%)
                 - stop_loss: stop loss level (0.0 = no stop loss)
                 - take_profit: take profit level (0.0 = no take profit)
         """
         if self.model is None:
             # No model loaded, return no trade signal
-            return 0, 'short', 1.0, 0.0, 0.0
+            return 0, 0, 1.0, 0.0, 0.0  # Using 0 for 'short' EMA choice
         
         try:
             # Get market data features for model input
@@ -213,7 +213,7 @@ class RLAgent:
             
             if features is None:
                 logger.warning("Not enough market data for features")
-                return 0, 'short', 1.0, 0.0, 0.0
+                return 0, 0, 1.0, 0.0, 0.0  # Using 0 for 'short' EMA choice
             
             # Normalize data if needed
             if self.vec_normalize:
@@ -240,8 +240,10 @@ class RLAgent:
             else:
                 trade_signal = 0  # No trade
             
-            # Default values for other parameters
-            ema_choice = 'short' if action > 0 else 'long'
+            # Default values for other parameters - convert to int for NT8
+            # ema_choice: 0 = short, 1 = long, 2 = both
+            # Using integer values to match NinjaTrader expectations
+            ema_choice = 0 if action > 0 else 1  # Integer value (0=short, 1=long)
             position_size = 1.0  # Full size
             
             # Calculate dynamic stop loss based on ATR
@@ -253,7 +255,7 @@ class RLAgent:
             
         except Exception as e:
             logger.error(f"Error in get_action: {e}")
-            return 0, 'short', 1.0, 0.0, 0.0  # Default to no trade on error
+            return 0, 0, 1.0, 0.0, 0.0  # Default to no trade on error with 'short' (0) EMA choice
         
     def update_profit_loss(self, trade_data: Dict):
         """Update profit and loss tracking based on trade data"""
@@ -352,8 +354,25 @@ class NinjaTraderInterface:
     def set_auto_trading(self, enabled: bool):
         """Enable or disable auto trading"""
         self.auto_trading_enabled = enabled
-        logger.info(f"Auto Trading switched {'ON' if enabled else 'OFF'}")
-        print(f"Auto Trading switched {'ON' if enabled else 'OFF'}")
+        
+        # Registrar en el log con formato destacado para facilitar debugging
+        if enabled:
+            logger.info("==============================================")
+            logger.info("=== AUTO TRADING ACTIVADO - ENVIANDO SEÑALES ===")
+            logger.info("==============================================")
+        else:
+            logger.info("----------------------------------------------")
+            logger.info("--- AUTO TRADING DESACTIVADO - NO SE ENVIARÁN SEÑALES ---")
+            logger.info("----------------------------------------------")
+            
+        # Tratar de enviar un mensaje de estado a NinjaTrader para confirmar
+        try:
+            if self.order_client_socket and self.order_client_socket.fileno() > 0:
+                self.send_order_command(f"STATUS:AutoTrading_{'ON' if enabled else 'OFF'}\n")
+        except Exception as e:
+            logger.warning(f"No se pudo enviar estado de auto-trading a NinjaTrader: {e}")
+            
+        return enabled
     
     def start(self):
         """Start the interface by connecting to NinjaTrader servers"""
@@ -741,15 +760,38 @@ class NinjaTraderInterface:
     def send_trading_action(self, signal, ema_choice, position_size, stop_loss, take_profit):
         """Send a trading action to NinjaTrader"""
         try:
-            # Format the order command
-            order_command = f"{signal},{ema_choice},{position_size},{stop_loss},{take_profit}\n"
+            # Convert ema_choice from string to integer if it's a string
+            ema_choice_int = ema_choice
+            if isinstance(ema_choice, str):
+                if ema_choice == 'short':
+                    ema_choice_int = 0
+                elif ema_choice == 'long':
+                    ema_choice_int = 1
+                elif ema_choice == 'both':
+                    ema_choice_int = 2
+                else:
+                    # Default to short (0) for any unexpected value
+                    ema_choice_int = 0
+                logger.info(f"Converting ema_choice from string '{ema_choice}' to int {ema_choice_int}")
+            
+            # Format the order command - make sure everything is in the format expected by RLExecutor.cs
+            order_command = f"{signal},{ema_choice_int},{position_size},{stop_loss},{take_profit}\n"
             
             # Send the command
-            self.send_order_command(order_command)
+            success = self.send_order_command(order_command)
             
-            logger.info(f"Sent trading action: {order_command.strip()}")
+            if success:
+                logger.info(f"Sent trading action: {order_command.strip()}")
+            else:
+                logger.warning(f"Failed to send trading action: {order_command.strip()}")
+                
+            # Log auto-trading status for debugging
+            logger.info(f"Auto-trading status: {'ENABLED' if self.auto_trading_enabled else 'DISABLED'}")
+            
+            return success
         except Exception as e:
             logger.error(f"Error sending trading action: {e}")
+            return False
             
     def send_order_command(self, command):
         """Send a command to NinjaTrader via the order connection"""
@@ -891,8 +933,27 @@ class NinjaTraderInterface:
             if self.auto_trading_enabled and hasattr(self, 'rl_agent') and self.rl_agent:
                 # Get action from RL agent
                 action = self.rl_agent.get_action(self.market_data)
+                
+                # Log auto-trading attempt and action
+                logger.info(f"Auto-trading active - evaluating trading action")
+                logger.info(f"RL agent action: {action}")
+                
                 if action and action[0] != 0:  # If there's a trade signal
-                    self.send_trading_action(*action)
+                    logger.info(f"Trade signal detected ({action[0]}), sending to NinjaTrader")
+                    # Verify that we have a good connection before sending
+                    if self.is_connected():
+                        logger.info(f"Connection verified - sending signal to NinjaTrader")
+                        self.send_trading_action(*action)
+                    else:
+                        logger.error(f"Cannot send trading signal - no active connection to NinjaTrader")
+                else:
+                    logger.info(f"No trade signal (hold position)")
+            else:
+                # Log why we're not trading
+                if not self.auto_trading_enabled:
+                    logger.debug("Auto-trading is disabled")
+                elif not hasattr(self, 'rl_agent') or not self.rl_agent:
+                    logger.warning("RL agent not available")
                     
         except Exception as e:
             logger.error(f"Error processing market data: {e}")

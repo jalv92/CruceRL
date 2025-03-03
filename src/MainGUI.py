@@ -275,7 +275,15 @@ class MainApplication(tk.Frame):
         # Configurar el estado de auto trading en la interfaz
         self.nt_interface.set_auto_trading(enabled)
         
-        logger.info(f"Auto Trading {'activado' if enabled else 'desactivado'}")
+        # Registro explícito para debug
+        if enabled:
+            logger.info("Auto Trading ACTIVADO - el sistema ahora enviará señales de trading")
+        else:
+            logger.info("Auto Trading DESACTIVADO - el sistema no enviará señales")
+        
+        # Mostrar mensaje al usuario para confirmar la acción
+        messagebox.showinfo("Auto Trading", 
+                          f"Auto Trading {'ACTIVADO' if enabled else 'DESACTIVADO'}")
         
     def initialize_objects(self):
         """Inicializar objetos del sistema"""
@@ -775,7 +783,7 @@ class MainApplication(tk.Frame):
                     return not self.running
                 
                 # Iniciar entrenamiento con los callbacks
-                model, train_env = self.training_manager.train(
+                model, train_env, model_path, vec_norm_path = self.training_manager.train(
                     train_data, test_data,
                     training_callback=update_training_ui,
                     enable_auto_tuning=enable_auto_tuning,  # Pasar explícitamente
@@ -958,7 +966,7 @@ class MainApplication(tk.Frame):
                         vec_normalize_path = possible_vec_norm
                 
                 # Iniciar el servidor en segundo plano con el modelo
-                run_trading_system.start_server_in_background(
+                server_started = run_trading_system.start_server_in_background(
                     ip=self.control_panel.ip_var.get(),
                     data_port=int(self.control_panel.data_port_var.get()),
                     order_port=int(self.control_panel.data_port_var.get()) + 1,
@@ -966,8 +974,27 @@ class MainApplication(tk.Frame):
                     vec_normalize_path=vec_normalize_path
                 )
                 
+                if server_started and model_path:
+                    logger.info("Servidor iniciado con un modelo RL - activando auto-trading")
+                    # Esperar un momento para asegurar que el servidor esté listo
+                    time.sleep(3)
+                    # Activar explícitamente el auto-trading
+                    if hasattr(run_trading_system, 'nt_interface') and run_trading_system.nt_interface:
+                        run_trading_system.nt_interface.set_auto_trading(True)
+                        logger.info("Auto-trading ACTIVADO automáticamente porque se cargó un modelo")
+                        messagebox.showinfo("Auto Trading", "Auto Trading activado automáticamente con el modelo cargado")
+                    else:
+                        logger.warning("No se pudo activar auto-trading - interfaz no disponible")
+                
                 # Obtener la referencia global al servidor
                 self.nt_interface = run_trading_system.nt_interface
+                
+                # Asegúrarse de que el switch de auto-trading refleje el estado real
+                if self.nt_interface and self.nt_interface.auto_trading_enabled:
+                    # Actualizar el switch sin llamar al callback
+                    self.control_panel.switch_var.set(True)
+                    self.control_panel.switch_canvas.itemconfig(self.control_panel.switch_bg, fill=COLORS['accent'])
+                    self.control_panel.switch_canvas.coords(self.control_panel.switch_handle, 22, 2, 38, 18)
                 
                 # Bucle principal mientras se ejecuta
                 while self.running:
